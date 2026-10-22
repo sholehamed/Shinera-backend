@@ -29,7 +29,6 @@ public class Auth : EndpointGroupBase
         ;
     }
     public async Task<IResult> GetUserInfo(
-        IIdentityDbContext dbContext,
    HttpContext context)
     {
 
@@ -125,6 +124,7 @@ public class Auth : EndpointGroupBase
     [Resouce("", "login")]
     public async Task<IResult> Login(HttpContext httpContext, CaptchaService captchaService,
 IIdentityDbContext db,
+RefreshGrantValidator refreshValidator,
 IPasswordHasher<User> passwordHasher,
 CancellationToken cancellationToken)
     {
@@ -145,13 +145,22 @@ CancellationToken cancellationToken)
             var result = await httpContext.AuthenticateAsync(
                 OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
 
-            if (!result.Succeeded)
+            // The refresh token is not proof that the account, tenant and role
+            // assignments are still valid. Reject stale principals: the client
+            // must authenticate again with its current permissions.
+            if (!result.Succeeded || result.Principal is null ||
+                !await refreshValidator.IsStillAuthorizedAsync(result.Principal, cancellationToken))
             {
                 return Results.Forbid(
-                    authenticationSchemes: [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme]);
+                    authenticationSchemes: [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme],
+                    properties: new AuthenticationProperties(new Dictionary<string, string?>
+                    {
+                        [OpenIddictServerAspNetCoreConstants.Properties.Error] = OpenIddictConstants.Errors.InvalidGrant,
+                        [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "The session is no longer valid."
+                    }));
             }
 
-            return Results.SignIn(result.Principal!,
+            return Results.SignIn(result.Principal,
                 authenticationScheme: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
         }
         if (!request.IsPasswordGrantType())
@@ -322,7 +331,8 @@ CancellationToken cancellationToken)
         new(OpenIddictConstants.Claims.GivenName, $"{user.FirstName} {user.LastName}"),
         new("tenant_id", tenant.Id.ToString()),
         new("tenant", tenant.Slug),
-        new Claim("account_type", "tenant")
+        new Claim("account_type", "tenant"),
+        new Claim("security_stamp", user.SecurityStamp ?? "")
     };
 
             claims.AddRange(roles.Select(role => new Claim(OpenIddictConstants.Claims.Role, role)));
@@ -493,7 +503,8 @@ CancellationToken cancellationToken)
         new(OpenIddictConstants.Claims.Email, user.Email),
         new(OpenIddictConstants.Claims.Picture, user.ImageId.ToString()!),
         new(OpenIddictConstants.Claims.GivenName, $"{user.FirstName} {user.LastName}"),
-        new Claim("account_type", "system")
+        new Claim("account_type", "system"),
+        new Claim("security_stamp", user.SecurityStamp ?? "")
     };
 
             claims.AddRange(roles.Select(role => new Claim(OpenIddictConstants.Claims.Role, role)));
