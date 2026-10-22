@@ -232,8 +232,13 @@ public sealed class IdentitySecuritySqlServerTests
             };
 
             var adminMembership = new UserRole(scope, systemUser.Id, adminRole.Id);
+            // Even an actual foreign-tenant role and matching permission must
+            // not authorize a platform user within the master storage scope.
+            var foreignMembership = new UserRole(foreignTenant.Id, systemUser.Id, foreignRole.Id);
+            var foreignPermission = new RolePermission(foreignTenant.Id, foreignRole.Id, permission.Id);
             db.AddRange(master, foreignTenant, systemUser, tenantOwner, adminRole,
-                viewRole, foreignRole, permission, adminMembership);
+                viewRole, foreignRole, permission, adminMembership,
+                foreignMembership, foreignPermission);
             await db.SaveChangesAsync();
 
             var admin = Principal(systemUser, "system", role: "superadmin");
