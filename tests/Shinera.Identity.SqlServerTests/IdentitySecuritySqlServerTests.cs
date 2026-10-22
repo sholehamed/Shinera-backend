@@ -23,7 +23,8 @@ public sealed class IdentitySecuritySqlServerTests
     {
         await WithIsolatedDatabaseAsync(async (db, _) =>
         {
-            var systemScope = new Tenant(null, "Platform test scope", "system-test", "localhost");
+            var systemScope = new Tenant(Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id,
+                null, "Platform test scope", "system-test", "localhost");
             var user = NewUser(null, "test-admin", UserType.System);
             var role = new Role(systemScope.Id, "superadmin", "Platform role");
             var assignment = new UserRole(systemScope.Id, user.Id, role.Id);

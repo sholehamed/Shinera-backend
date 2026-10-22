@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Modules.System.Identity.Application.Abstractions;
 using Modules.System.Identity.Domain.Entities;
 using OpenIddict.Abstractions;
+using Modules.System.Identity.Infrastructure.Persistence;
 using System.Security.Claims;
 
 namespace Modules.System.Identity.Web.Util;
@@ -29,8 +30,10 @@ public sealed class ActiveSystemAdministratorHandler(IIdentityDbContext database
             return;
 
         var hasRole = await database.UserRoles.IgnoreQueryFilters(["tenant"]).AsNoTracking()
-            .AnyAsync(x => x.UserId == userId && x.Role.IsActive &&
-                           x.Role.NormalizedName == "SUPERADMIN");
+            .AnyAsync(x => x.UserId == userId &&
+                           x.TenantId == DefaultSeedData.MasterTenant.Id &&
+                           x.Role.TenantId == DefaultSeedData.MasterTenant.Id &&
+                           x.Role.IsActive && x.Role.NormalizedName == "SUPERADMIN");
 
         if (hasRole)
             context.Succeed(requirement);

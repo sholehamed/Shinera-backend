@@ -30,6 +30,8 @@ namespace Modules.System.Identity
             services.AddScoped<ITenantContext, TenantContext>();
             services.AddScoped<ITenantAccessResolver, TenantAccessResolver>();
             services.AddScoped<TrustedTenantWriteScope>();
+            services.AddScoped<AuthorizedPlatformMasterWrite>();
+            services.AddScoped<PlatformRoleWriteExecutor>();
             services.AddScoped<TenantSaveChangesInterceptor>();
             services.AddBaseInfrastructureServices<IdentityDbContext>(configuration, "Identity", (sp,options) =>
         {

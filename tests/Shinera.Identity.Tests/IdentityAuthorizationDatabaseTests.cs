@@ -24,7 +24,7 @@ public sealed class IdentityAuthorizationDatabaseTests
         await using var db = new SqliteIdentityDbContext(options, tenant);
         await db.Database.EnsureCreatedAsync();
 
-        var systemScope = Guid.NewGuid();
+        var systemScope = Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id;
         var user = new User(null, "admin", "admin@example.test",
             "System", "Admin", UserType.System)
         {

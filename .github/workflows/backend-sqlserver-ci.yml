@@ -97,7 +97,35 @@ jobs:
             cat /tmp/shinera-api.log
             exit 1
           fi
-          echo "PASS: real app migrations/seeding, admin login, and protected System role lookup."
+          # Exercise the real HTTP -> CQRS -> trusted EF write path, not only
+          # the isolated authorizer unit/integration tests.
+          status=$(curl --silent --show-error --output /tmp/shinera-created-role.json \
+            --write-out '%{http_code}' \
+            --request POST 'http://127.0.0.1:5069/api/system/Roles' \
+            --header "Authorization: Bearer $access_token" \
+            --header 'Content-Type: application/json' \
+            --data '{"name":"CI Platform Operator","description":"Scoped role smoke","isActive":true}')
+          if [ "$status" != 201 ]; then
+            echo "Verified System administrator could not create a scoped platform role (HTTP $status)"
+            cat /tmp/shinera-created-role.json
+            cat /tmp/shinera-api.log
+            exit 1
+          fi
+          role_id=$(python3 -c 'import json;print(json.load(open("/tmp/shinera-created-role.json")))')
+          if [ -z "$role_id" ]; then echo "Empty created role identifier"; exit 1; fi
+
+          status=$(curl --silent --show-error --output /tmp/shinera-role-forbidden.json \
+            --write-out '%{http_code}' \
+            --request PUT 'http://127.0.0.1:5069/api/system/Roles/00000000-0000-0000-0000-000000000001/permissions' \
+            --header "Authorization: Bearer $access_token" \
+            --header 'Content-Type: application/json' \
+            --data '{"permissionIds":[]}')
+          if [ "$status" != 403 ]; then
+            echo "Foreign/non-platform role write did not fail closed with 403 (HTTP $status)"
+            cat /tmp/shinera-role-forbidden.json
+            exit 1
+          fi
+          echo "PASS: real System login, protected read, scoped role create and forbidden cross-scope write."
 
       - name: Upload SQL Server test results
         if: always()
