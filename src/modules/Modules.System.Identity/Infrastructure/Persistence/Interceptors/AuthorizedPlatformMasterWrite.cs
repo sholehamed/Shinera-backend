@@ -21,7 +21,7 @@ public sealed class AuthorizedPlatformMasterWrite(
     ILogger<AuthorizedPlatformMasterWrite> logger)
 {
     public async Task<IDisposable> BeginAsync(ClaimsPrincipal principal,
-        CancellationToken cancellationToken = default)
+        Guid? targetRoleId = null, CancellationToken cancellationToken = default)
     {
         if (!SystemAuthorizationPolicies.IsSystemAdministrator(principal) ||
             !Guid.TryParse(principal.FindFirstValue(OpenIddictConstants.Claims.Subject), out var actorId) ||
@@ -46,6 +46,16 @@ public sealed class AuthorizedPlatformMasterWrite(
         {
             logger.LogWarning("Denied master write for System actor {ActorId}", actorId);
             throw new UnauthorizedAccessException("Platform role or account has been revoked.");
+        }
+
+        // Verify role ownership before opening the privileged read/write scopes.
+        // A client-controlled role identifier must never select a foreign tenant.
+        if (targetRoleId.HasValue && !await db.Roles.IgnoreQueryFilters(["tenant"])
+            .AsNoTracking().AnyAsync(x => x.Id == targetRoleId.Value &&
+                x.TenantId == masterTenantId, cancellationToken))
+        {
+            logger.LogWarning("Denied platform write for foreign or missing role {RoleId}", targetRoleId);
+            throw new UnauthorizedAccessException("Role is outside the platform storage scope.");
         }
 
         // Read visibility and write authority are two separate, individually

@@ -175,7 +175,9 @@ public sealed class TenantWriteIsolationSqlServerTests
                 new Claim("account_type", "system"),
                 new Claim(OpenIddictConstants.Claims.Role, "superadmin")
             ], "test"));
-            var writer = new PlatformRoleWriteExecutor(guarded, tenant, trusted,
+            var writer = new PlatformRoleWriteExecutor(
+                new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
+                    NullLogger<AuthorizedPlatformMasterWrite>.Instance),
                 NullLogger<PlatformRoleWriteExecutor>.Instance);
 
             var id = await writer.ExecuteAsync(principal, "roles.create", async () =>
@@ -234,7 +236,9 @@ public sealed class TenantWriteIsolationSqlServerTests
                 new Claim("account_type", "system"),
                 new Claim(OpenIddictConstants.Claims.Role, "superadmin")
             ], "test"));
-            var writer = new PlatformRoleWriteExecutor(guarded, tenant, trusted,
+            var writer = new PlatformRoleWriteExecutor(
+                new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
+                    NullLogger<AuthorizedPlatformMasterWrite>.Instance),
                 NullLogger<PlatformRoleWriteExecutor>.Instance);
 
             var command = new UpdateRolePermissionsCommand
