@@ -21,7 +21,7 @@ public sealed class IdentityAuthorizationDatabaseTests
             .UseSqlite(connection).Options;
         var tenant = new TenantContext();
 
-        await using var db = new IdentityDbContext(options, tenant);
+        await using var db = new SqliteIdentityDbContext(options, tenant);
         await db.Database.EnsureCreatedAsync();
 
         var systemScope = Guid.NewGuid();
@@ -31,6 +31,7 @@ public sealed class IdentityAuthorizationDatabaseTests
             NormalizedUserName = "ADMIN",
             NormalizedEmail = "ADMIN@EXAMPLE.TEST",
             SecurityStamp = "initial-stamp",
+            PasswordHash = "test-only-not-used",
         };
         var role = new Role(systemScope, "superadmin", "Platform administrator");
         var assignment = new UserRole(systemScope, user.Id, role.Id);
@@ -74,7 +75,7 @@ public sealed class IdentityAuthorizationDatabaseTests
         var options = new DbContextOptionsBuilder<IdentityDbContext>()
             .UseSqlite(connection).Options;
 
-        await using var db = new IdentityDbContext(options, new TenantContext());
+        await using var db = new SqliteIdentityDbContext(options, new TenantContext());
         await db.Database.EnsureCreatedAsync();
 
         var user = new User(null, "disabled", "disabled@example.test",
@@ -84,6 +85,7 @@ public sealed class IdentityAuthorizationDatabaseTests
             NormalizedEmail = "DISABLED@EXAMPLE.TEST",
             IsActive = false,
             SecurityStamp = "stamp",
+            PasswordHash = "test-only-not-used",
         };
         db.Users.Add(user);
         await db.SaveChangesAsync();
@@ -95,5 +97,28 @@ public sealed class IdentityAuthorizationDatabaseTests
         ], "test"));
 
         Assert.False(await new RefreshGrantValidator(db).IsStillAuthorizedAsync(principal));
+    }
+    // SQLite does not implement SQL Server's auto-generated rowversion type.
+    // Provide insertion-time byte values for all concurrency properties in
+    // this isolated test model. SQL Server semantics need separate integration tests.
+    private sealed class SqliteIdentityDbContext(
+        DbContextOptions<IdentityDbContext> options,
+        Modules.System.Identity.Application.Abstractions.ITenantContext tenantContext)
+        : IdentityDbContext(options, tenantContext)
+    {
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            base.OnModelCreating(modelBuilder);
+            foreach (var entity in modelBuilder.Model.GetEntityTypes())
+            {
+                if (entity.ClrType is null || entity.FindProperty("RowVersion") is null)
+                    continue;
+
+                modelBuilder.Entity(entity.ClrType)
+                    .Property<byte[]>("RowVersion")
+                    .HasColumnType("BLOB")
+                    .HasDefaultValueSql("randomblob(8)");
+            }
+        }
     }
 }
