@@ -343,6 +343,67 @@ public sealed class IdentitySecuritySqlServerTests
         return authorization.HasSucceeded;
     }
 
+    [Fact]
+    public async Task Platform_catalog_seeds_without_privilege_then_explicit_development_grant_is_revocable()
+    {
+        await WithIsolatedDatabaseAsync(async (db, _) =>
+        {
+            var scope = Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(scope, null, "Platform", "catalog-master", "localhost");
+            var other = new Tenant(null, "Business", "catalog-other", "localhost");
+            var systemUser = NewUser(null, "catalog-admin", UserType.System);
+            var superadmin = new Role(scope, "superadmin", "Master platform administrator");
+            var foreignSuperadmin = new Role(other.Id, "superadmin", "Untrusted foreign role");
+            var assignment = new UserRole(scope, systemUser.Id, superadmin.Id);
+            db.AddRange(master, other, systemUser, superadmin, foreignSuperadmin, assignment);
+            await db.SaveChangesAsync();
+
+            var principal = Principal(systemUser, "system", role: "superadmin");
+            var handler = new SystemPermissionHandler(db);
+            var requirement = new SystemPermissionRequirement("roles", "create");
+
+            // Seeding definitions must NEVER implicitly grant a capability.
+            await Modules.System.Identity.Infrastructure.Persistence.PlatformPermissionCatalogSeeder
+                .SeedDefinitionsAsync(db);
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, principal));
+            var codes = Modules.System.Identity.Infrastructure.Persistence.PlatformPermissionCatalog.Codes;
+            Assert.Equal(codes.Count, await db.Permissions
+                .CountAsync(x => codes.Contains(x.Code)));
+
+            await Modules.System.Identity.Infrastructure.Persistence.PlatformPermissionCatalogSeeder
+                .SeedDefinitionsAsync(db);
+            Assert.Equal(codes.Count, await db.Permissions
+                .CountAsync(x => codes.Contains(x.Code))); // repeatable, no duplicates
+
+            // Only a deliberate, development-only bootstrap grants Master Role rights.
+            await Modules.System.Identity.Infrastructure.Persistence.PlatformPermissionCatalogSeeder
+                .GrantDevelopmentSuperAdminAsync(db);
+            Assert.True(await SystemPermissionAllowedAsync(handler, requirement, principal));
+            Assert.Equal(codes.Count, await db.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .CountAsync(x => x.RoleId == superadmin.Id && x.TenantId == scope));
+
+            var granted = await db.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .SingleAsync(x => x.RoleId == superadmin.Id &&
+                    x.TenantId == scope && x.Permission.Code == requirement.Key);
+            db.RolePermissions.Remove(granted);
+            await db.SaveChangesAsync();
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, principal));
+
+            // Catalog reconciliation must not accidentally restore a revoked grant.
+            await Modules.System.Identity.Infrastructure.Persistence.PlatformPermissionCatalogSeeder
+                .SeedDefinitionsAsync(db);
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, principal));
+
+            // Disabled catalog entries must remain disabled through repeatable seeding.
+            var permission = await db.Permissions.SingleAsync(x => x.Code == requirement.Key);
+            permission.IsActive = false;
+            await db.SaveChangesAsync();
+            await Modules.System.Identity.Infrastructure.Persistence.PlatformPermissionCatalogSeeder
+                .SeedDefinitionsAsync(db);
+            Assert.False((await db.Permissions.SingleAsync(x => x.Code == requirement.Key)).IsActive);
+        });
+    }
+
     private static User NewUser(Guid? tenantId, string username, UserType type)
         => new(tenantId, username, username + "@example.test", "Test", "User", type)
         {
