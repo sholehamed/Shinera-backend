@@ -20,6 +20,8 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
         var configuration = serviceProvider.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
         await SeedOpenIddictAsync(applicationManager);
         var masterTenant = await EnsureTenantAsync(db, DefaultSeedData.MasterTenant);
+        // Additive, idempotent definitions. No privileges are granted in Production.
+        await PlatformPermissionCatalogSeeder.SeedDefinitionsAsync(db);
 
         // Never create an account with a known development password in production.
         if (serviceProvider.GetRequiredService<IHostEnvironment>().IsDevelopment())
@@ -28,6 +30,9 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
                 ?? "123456"; // Legacy local-only default; override via environment variable.
             await EnsureUserAsync(db, passwordHasher, DefaultSeedData.Users.ToArray(), developmentPassword);
             await EnsureDevelopmentSystemAdminRoleAsync(db, masterTenant.Id);
+            // Explicit Development/CI opt-in only. Never silently restore grants in Production.
+            if (configuration.GetValue<bool>("Identity:PlatformPermissions:BootstrapDevelopmentGrants"))
+                await PlatformPermissionCatalogSeeder.GrantDevelopmentSuperAdminAsync(db);
             if (configuration.GetValue<bool>("Identity:E2E:Enabled"))
             {
                 await EnsureUserAsync(db, passwordHasher,
