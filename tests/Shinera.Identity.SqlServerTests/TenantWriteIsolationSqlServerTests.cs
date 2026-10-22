@@ -1,6 +1,10 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
+using Modules.System.Identity.Web.Util;
+using Modules.System.Identity.Application.Features.Roles.Commands;
+using OpenIddict.Abstractions;
+using System.Security.Claims;
 using Modules.System.Identity.Application.Services;
 using Modules.System.Identity.Domain.Entities;
 using Modules.System.Identity.Infrastructure.Persistence;
@@ -138,6 +142,127 @@ public sealed class TenantWriteIsolationSqlServerTests
 
             guard.Roles.Add(new Role(foreign.Id, "outside-bootstrap", null));
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() => guard.SaveChangesAsync());
+        });
+    }
+
+    [Fact]
+    public async Task Platform_role_writer_allows_master_role_but_rejects_foreign_scope_and_revoked_actor()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guarded, trusted) =>
+        {
+            var scope = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(scope, null, "Platform", "write-master", "localhost");
+            var foreign = new Tenant(null, "Other salon", "write-foreign", "localhost");
+            var actor = new User(null, "role-admin", "role-admin@example.test",
+                "Platform", "Admin", UserType.System)
+            {
+                NormalizedUserName = "ROLE-ADMIN",
+                NormalizedEmail = "ROLE-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only",
+                SecurityStamp = "test-stamp"
+            };
+            var superAdmin = new Role(scope, "superadmin", "Privileged System user");
+            var membership = new UserRole(scope, actor.Id, superAdmin.Id);
+            var foreignRole = new Role(foreign.Id, "foreign-role", null);
+            setup.AddRange(master, foreign, actor, superAdmin, membership, foreignRole);
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, isSuperAdmin: true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var writer = new PlatformRoleWriteExecutor(guarded, tenant, trusted,
+                NullLogger<PlatformRoleWriteExecutor>.Instance);
+
+            var id = await writer.ExecuteAsync(principal, "roles.create", async () =>
+            {
+                var created = new Role(scope, "Platform editor", "Test role");
+                guarded.Roles.Add(created);
+                await guarded.SaveChangesAsync();
+                return created.Id;
+            });
+            Assert.NotEqual(Guid.Empty, id);
+            Assert.Equal(scope, (await guarded.Roles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().SingleAsync(x => x.Id == id)).TenantId);
+            Assert.False(trusted.AllowsPlatformTenant(scope));
+
+            // Trusted reads are not a privilege to mutate another tenant.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "roles.update", () => Task.CompletedTask, foreignRole.Id));
+
+            // Revoked role membership invalidates a previously issued access token.
+            setup.UserRoles.Remove(membership);
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "roles.create", () => Task.CompletedTask));
+            Assert.False(trusted.AllowsPlatformTenant(scope));
+        });
+    }
+
+    [Fact]
+    public async Task Scoped_role_permission_assignment_is_atomic_and_cannot_target_foreign_role()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guarded, trusted) =>
+        {
+            var scope = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(scope, null, "Platform", "permissions-master", "localhost");
+            var foreign = new Tenant(null, "Other salon", "permissions-foreign", "localhost");
+            var actor = new User(null, "permission-admin", "permission-admin@example.test",
+                "Platform", "Admin", UserType.System)
+            {
+                NormalizedUserName = "PERMISSION-ADMIN",
+                NormalizedEmail = "PERMISSION-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only",
+                SecurityStamp = "test-stamp"
+            };
+            var adminRole = new Role(scope, "superadmin", "Admin");
+            var target = new Role(scope, "operator", "Managed");
+            var otherRole = new Role(foreign.Id, "foreign", "Denied");
+            var membership = new UserRole(scope, actor.Id, adminRole.Id);
+            var permission = new Permission { Code = "ROLES.VIEW", Name = "roles.view" };
+            setup.AddRange(master, foreign, actor, adminRole, target, otherRole,
+                membership, permission);
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var writer = new PlatformRoleWriteExecutor(guarded, tenant, trusted,
+                NullLogger<PlatformRoleWriteExecutor>.Instance);
+
+            var command = new UpdateRolePermissionsCommand
+            {
+                RoleId = target.Id,
+                StorageTenantId = scope,
+                PermissionIds = [permission.Id]
+            };
+            await writer.ExecuteAsync(principal, "roles.permissions.replace",
+                async () => await new UpdateRolePermissionsCommandHandler(guarded)
+                    .Handle(command, CancellationToken.None), target.Id);
+
+            var applied = await guarded.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().SingleAsync(x => x.RoleId == target.Id);
+            Assert.Equal(scope, applied.TenantId);
+            Assert.Equal(permission.Id, applied.PermissionId);
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "roles.permissions.replace", () => Task.CompletedTask, otherRole.Id));
+
+            // No prior assignment must be lost if the request contains an invalid permission.
+            command.PermissionIds = [Guid.NewGuid()];
+            await Assert.ThrowsAnyAsync<Exception>(() => writer.ExecuteAsync(
+                principal, "roles.permissions.replace",
+                async () => await new UpdateRolePermissionsCommandHandler(guarded)
+                    .Handle(command, CancellationToken.None), target.Id));
+
+            Assert.Equal(permission.Id, (await guarded.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().SingleAsync(x => x.RoleId == target.Id)).PermissionId);
+            Assert.False(trusted.AllowsPlatformTenant(scope));
         });
     }
 
