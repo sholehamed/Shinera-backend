@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Modules.System.Identity.Domain.Entities;
 using Modules.System.Identity.Infrastructure.Persistence.Contexts;
 using OpenIddict.Abstractions;
@@ -15,10 +16,17 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
         var db = serviceProvider.GetRequiredService<IdentityDbContext>();
         var passwordHasher = serviceProvider.GetRequiredService<IPasswordHasher<User>>();
         var applicationManager = serviceProvider.GetRequiredService<IOpenIddictApplicationManager>();
-        await EnsureUserAsync(db, passwordHasher, DefaultSeedData.Users.ToArray(), "123456");
-
         await SeedOpenIddictAsync(applicationManager);
-        await EnsureTenantAsync(db, DefaultSeedData.MasterTenant);
+        var masterTenant = await EnsureTenantAsync(db, DefaultSeedData.MasterTenant);
+
+        // Never create an account with a known development password in production.
+        if (serviceProvider.GetRequiredService<IHostEnvironment>().IsDevelopment())
+        {
+            var developmentPassword = Environment.GetEnvironmentVariable("SHINERA_DEVELOPMENT_ADMIN_PASSWORD")
+                ?? "123456"; // Legacy local-only default; override via environment variable.
+            await EnsureUserAsync(db, passwordHasher, DefaultSeedData.Users.ToArray(), developmentPassword);
+            await EnsureDevelopmentSystemAdminRoleAsync(db, masterTenant.Id);
+        }
         //await EnsureTenantsAsync(db, DefaultSeedData.Tenants);
 
 
@@ -61,6 +69,36 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
         if (exists is null)
         {
             await applicationManager.CreateAsync(descriptor);
+        }
+    }
+
+    // Only called in Development. Existing production installations need an
+    // explicit, reviewed migration of their platform administrator assignments.
+    private static async Task EnsureDevelopmentSystemAdminRoleAsync(IdentityDbContext db, Guid systemScopeTenantId)
+    {
+        var role = await db.Roles.IgnoreQueryFilters(["tenant"])
+            .FirstOrDefaultAsync(x => x.TenantId == systemScopeTenantId && x.NormalizedName == "SUPERADMIN");
+
+        if (role is null)
+        {
+            role = new Role(systemScopeTenantId, "superadmin", "Local development system administrator");
+            db.Roles.Add(role);
+            await db.SaveChangesAsync();
+        }
+
+        var admin = await db.Users.FirstOrDefaultAsync(x =>
+            x.UserTpe == UserType.System && x.TenantId == null && x.NormalizedUserName == "ADMIN");
+
+        if (admin is null)
+            return;
+
+        var assigned = await db.UserRoles.IgnoreQueryFilters(["tenant"])
+            .AnyAsync(x => x.UserId == admin.Id && x.RoleId == role.Id && x.TenantId == systemScopeTenantId);
+
+        if (!assigned)
+        {
+            db.UserRoles.Add(new UserRole(systemScopeTenantId, admin.Id, role.Id));
+            await db.SaveChangesAsync();
         }
     }
 

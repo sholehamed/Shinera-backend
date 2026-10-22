@@ -100,11 +100,7 @@ namespace Modules.System.Identity
                 options.AddPolicy("SystemAdministrator", policy =>
                     policy.RequireAuthenticatedUser()
                           .RequireAssertion(context =>
-                              context.User.HasClaim("account_type", "system") &&
-                              !context.User.HasClaim(claim => claim.Type == "tenant_id") &&
-                              context.User.FindAll(OpenIddictConstants.Claims.Role)
-                                  .Any(claim => string.Equals(claim.Value, "superadmin",
-                                      StringComparison.OrdinalIgnoreCase))));
+                              SystemAuthorizationPolicies.IsSystemAdministrator(context.User)));
             });
             return services;
         }
