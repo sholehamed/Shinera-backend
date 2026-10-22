@@ -9,6 +9,12 @@ public static class DbSeeder
     {
         using var scope = services.CreateScope();
 
+        // Only the startup seeder can enter this infrastructure-owned bypass.
+        // A normal query filter override does NOT authorize writes.
+        using var bootstrapWrites = scope.ServiceProvider
+            .GetRequiredService<Interceptors.TrustedTenantWriteScope>()
+            .BeginBootstrapWrites();
+
         var db = scope.ServiceProvider.GetRequiredService<IdentityDbContext>();
         await db.Database.MigrateAsync();
 
