@@ -3,6 +3,7 @@ using Infrastructure.SharedKernel;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Modules.System.Identity.Application.Abstractions;
 using Modules.System.Identity.Application.Features.ApiResources.Services;
 using Modules.System.Identity.Application.Mapping;
@@ -20,7 +21,7 @@ namespace Modules.System.Identity
 {
     public static class DependencyInjections
     {
-        public static IServiceCollection AddIdentityModule(this IServiceCollection services, IConfiguration configuration)
+        public static IServiceCollection AddIdentityModule(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
         {
             services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
             services.AddScoped<ICurrentUser, CurrentUser>();
@@ -71,11 +72,19 @@ namespace Modules.System.Identity
                     options.AddDevelopmentEncryptionCertificate()
                            .AddDevelopmentSigningCertificate();
 
-                    options.UseAspNetCore()
+                    var aspNetCoreOptions = options.UseAspNetCore()
                            .EnableTokenEndpointPassthrough()
                            .EnableAuthorizationEndpointPassthrough()
                            .EnableEndSessionEndpointPassthrough()
                            .EnableUserInfoEndpointPassthrough();
+
+                    // Local-only E2E exception. Never relax the HTTPS requirement
+                    // in Production, even if the CI flag is accidentally supplied.
+                    if (environment.IsDevelopment() &&
+                        configuration.GetValue<bool>("Identity:AllowInsecureHttpForE2E"))
+                    {
+                        aspNetCoreOptions.DisableTransportSecurityRequirement();
+                    }
 
                     options.DisableAccessTokenEncryption(); // optional for JWT readability
                 })
