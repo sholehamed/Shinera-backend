@@ -5,7 +5,7 @@ namespace Roles.System.Identity.Application.Features.Roles.Commands
 {
     public record RoleCreateCommand : MapTo<Role>, ICommand<Guid>
     {
-        [System.Text.Json.Serialization.JsonIgnore]
+        [global::System.Text.Json.Serialization.JsonIgnore]
         public Guid StorageTenantId { get; set; }
         public string Name { get; set; } = default!;
         public string? Description { get; set; }
