@@ -209,6 +209,139 @@ public sealed class IdentitySecuritySqlServerTests
         });
     }
 
+    [Fact]
+    public async Task Platform_resource_action_requires_explicit_master_scoped_grant()
+    {
+        await WithIsolatedDatabaseAsync(async (db, _) =>
+        {
+            // Master Tenant is a legacy role/permission *definition scope*;
+            // the System user deliberately has no TenantId.
+            var scope = Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(scope, null, "Platform role scope", "platform-test", "localhost");
+            var foreignTenant = new Tenant(null, "Other tenant", "foreign-platform-test", "localhost");
+            var systemUser = NewUser(null, "system-operator", UserType.System);
+            var tenantOwner = NewUser(foreignTenant.Id, "tenant-owner", UserType.Tenant);
+            var adminRole = new Role(scope, "superadmin", "Full platform administrator");
+            var viewRole = new Role(scope, "platform-viewer", "Reports only");
+            var foreignRole = new Role(foreignTenant.Id, "tenant-owner", "Business owner");
+            var permission = new Permission
+            {
+                Code = "REPORTS.VIEW",
+                Name = "reports.view",
+                IsActive = true
+            };
+
+            var adminMembership = new UserRole(scope, systemUser.Id, adminRole.Id);
+            // Even an actual foreign-tenant role and matching permission must
+            // not authorize a platform user within the master storage scope.
+            var foreignMembership = new UserRole(foreignTenant.Id, systemUser.Id, foreignRole.Id);
+            var foreignPermission = new RolePermission(foreignTenant.Id, foreignRole.Id, permission.Id);
+            db.AddRange(master, foreignTenant, systemUser, tenantOwner, adminRole,
+                viewRole, foreignRole, permission, adminMembership,
+                foreignMembership, foreignPermission);
+            await db.SaveChangesAsync();
+
+            var admin = Principal(systemUser, "system", role: "superadmin");
+            var requirement = new SystemPermissionRequirement("reports", "view");
+            var handler = new SystemPermissionHandler(db);
+
+            // SuperAdmin's coarse role must not automatically grant
+            // unassigned Resource.Action permissions.
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, admin));
+            Assert.False(await SystemPermissionAllowedAsync(handler,
+                new SystemPermissionRequirement("reports", "delete"), admin));
+
+            var membership = new UserRole(scope, systemUser.Id, viewRole.Id);
+            var assignment = new RolePermission(scope, viewRole.Id, permission.Id);
+            db.AddRange(membership, assignment);
+            await db.SaveChangesAsync();
+
+            Assert.True(await SystemPermissionAllowedAsync(handler, requirement, admin));
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement,
+                Principal(tenantOwner, "tenant", foreignTenant.Id, foreignTenant.Slug, "owner")));
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement,
+                Principal(systemUser, "tenant", foreignTenant.Id, foreignTenant.Slug)));
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement,
+                Principal(systemUser, "system", foreignTenant.Id, foreignTenant.Slug)));
+
+            // A denied direct grant overrides inherited role permission,
+            // following the current identity persistence semantics.
+            var denial = new UserPermission
+            {
+                TenantId = scope, UserId = systemUser.Id,
+                PermissionId = permission.Id, IsGranted = false
+            };
+            db.UserPermissions.Add(denial);
+            await db.SaveChangesAsync();
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, admin));
+
+            db.UserPermissions.Remove(denial);
+            db.RolePermissions.Remove(assignment);
+            await db.SaveChangesAsync();
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, admin));
+
+            var direct = new UserPermission
+            {
+                TenantId = scope, UserId = systemUser.Id,
+                PermissionId = permission.Id, IsGranted = true
+            };
+            db.UserPermissions.Add(direct);
+            await db.SaveChangesAsync();
+            Assert.True(await SystemPermissionAllowedAsync(handler, requirement, admin));
+
+            // Neither user privilege nor grants can bypass disabled account/scope.
+            systemUser.IsActive = false;
+            await db.SaveChangesAsync();
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, admin));
+            systemUser.IsActive = true;
+            master.IsActive = false;
+            await db.SaveChangesAsync();
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, admin));
+        });
+    }
+
+    [Fact]
+    public async Task Platform_group_grants_are_scoped_to_the_master_tenant()
+    {
+        await WithIsolatedDatabaseAsync(async (db, _) =>
+        {
+            var scope = Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(scope, null, "Platform role scope", "platform-groups", "localhost");
+            var otherTenant = new Tenant(null, "Other tenant", "other-groups", "localhost");
+            var user = NewUser(null, "system-group-operator", UserType.System);
+            var role = new Role(scope, "platform-reader", "Platform reader");
+            var permission = new Permission { Code = "TENANTS.VIEW", Name = "tenants.view" };
+            var group = new Group
+            {
+                TenantId = scope, Name = "Platform operators", NormalizedName = "PLATFORM OPERATORS"
+            };
+            var membership = new UserGroup { TenantId = scope, UserId = user.Id, GroupId = group.Id };
+            var groupRole = new GroupRole { TenantId = scope, GroupId = group.Id, RoleId = role.Id };
+            var grant = new RolePermission(scope, role.Id, permission.Id);
+            db.AddRange(master, otherTenant, user, role, permission, group,
+                membership, groupRole, grant);
+            await db.SaveChangesAsync();
+
+            var principal = Principal(user, "system");
+            var handler = new SystemPermissionHandler(db);
+            var requirement = new SystemPermissionRequirement("tenants", "view");
+            Assert.True(await SystemPermissionAllowedAsync(handler, requirement, principal));
+
+            groupRole.TenantId = otherTenant.Id;
+            await db.SaveChangesAsync();
+            Assert.False(await SystemPermissionAllowedAsync(handler, requirement, principal));
+        });
+    }
+
+    private static async Task<bool> SystemPermissionAllowedAsync(
+        SystemPermissionHandler handler, SystemPermissionRequirement requirement,
+        ClaimsPrincipal principal)
+    {
+        var authorization = new AuthorizationHandlerContext([requirement], principal, null);
+        await handler.HandleAsync(authorization);
+        return authorization.HasSucceeded;
+    }
+
     private static User NewUser(Guid? tenantId, string username, UserType type)
         => new(tenantId, username, username + "@example.test", "Test", "User", type)
         {
