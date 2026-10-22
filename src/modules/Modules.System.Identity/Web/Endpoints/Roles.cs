@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Builder;
 using Modules.System.Identity.Web.Util;
 using Modules.System.Identity.Infrastructure.Persistence;
 ﻿using Microsoft.AspNetCore.Routing;
