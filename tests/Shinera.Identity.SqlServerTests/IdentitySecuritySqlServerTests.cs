@@ -86,6 +86,66 @@ public sealed class IdentitySecuritySqlServerTests
         });
     }
 
+    [Fact]
+    public async Task Explicit_tenant_permission_enforces_resource_action_membership_and_revocation()
+    {
+        await WithIsolatedDatabaseAsync(async (db, _) =>
+        {
+            var tenantA = new Tenant(null, "Nail studio", "studio-a", "localhost");
+            var tenantB = new Tenant(null, "Other business", "studio-b", "localhost");
+            var user = NewUser(tenantA.Id, "permission-user", UserType.Tenant);
+            var role = new Role(tenantA.Id, "receptionist", "Service viewer");
+            var permission = new Permission
+            {
+                Code = "SERVICES.VIEW",
+                Name = "services.view",
+                IsActive = true
+            };
+            var membership = new UserRole(tenantA.Id, user.Id, role.Id);
+            var grant = new RolePermission(tenantA.Id, role.Id, permission.Id);
+            db.AddRange(tenantA, tenantB, user, role, permission, membership, grant);
+            await db.SaveChangesAsync();
+
+            var handler = new TenantPermissionHandler(db);
+            var view = new TenantPermissionRequirement("services", "view");
+            var delete = new TenantPermissionRequirement("services", "delete");
+            var valid = Principal(user, "tenant", tenantId: tenantA.Id, slug: tenantA.Slug);
+
+            Assert.True(await TenantPermissionAllowedAsync(handler, view, valid));
+            Assert.False(await TenantPermissionAllowedAsync(handler, delete, valid));
+            Assert.False(await TenantPermissionAllowedAsync(handler, view,
+                Principal(user, "tenant", tenantId: tenantB.Id, slug: tenantB.Slug)));
+            Assert.False(await TenantPermissionAllowedAsync(handler, view,
+                Principal(user, "system", role: "superadmin")));
+
+            db.RolePermissions.Remove(grant);
+            await db.SaveChangesAsync();
+            Assert.False(await TenantPermissionAllowedAsync(handler, view, valid));
+
+            var direct = new UserPermission
+            {
+                TenantId = tenantA.Id, UserId = user.Id,
+                PermissionId = permission.Id, IsGranted = true
+            };
+            db.UserPermissions.Add(direct);
+            await db.SaveChangesAsync();
+            Assert.True(await TenantPermissionAllowedAsync(handler, view, valid));
+
+            tenantA.IsActive = false;
+            await db.SaveChangesAsync();
+            Assert.False(await TenantPermissionAllowedAsync(handler, view, valid));
+        });
+    }
+
+    private static async Task<bool> TenantPermissionAllowedAsync(
+        TenantPermissionHandler handler, TenantPermissionRequirement requirement,
+        ClaimsPrincipal principal)
+    {
+        var authorization = new AuthorizationHandlerContext([requirement], principal, null);
+        await handler.HandleAsync(authorization);
+        return authorization.HasSucceeded;
+    }
+
     private static User NewUser(Guid? tenantId, string username, UserType type)
         => new(tenantId, username, username + "@example.test", "Test", "User", type)
         {
