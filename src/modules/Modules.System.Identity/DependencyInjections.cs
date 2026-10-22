@@ -41,6 +41,7 @@ namespace Modules.System.Identity
             services.AddScoped<CaptchaService>();
             services.AddScoped<RefreshGrantValidator>();
             services.AddScoped<IAuthorizationHandler, ActiveSystemAdministratorHandler>();
+            services.AddScoped<IAuthorizationHandler, TenantPermissionHandler>();
             services.AddScoped<IIdentityDbContext>(provider =>
            provider.GetRequiredService<IdentityDbContext>());
             services.AddScoped<IPermissionResolver, RoutePermissionResolver>();
