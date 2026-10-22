@@ -39,6 +39,66 @@ jobs:
       - name: Run SQL Server migrations and authorization regressions
         run: dotnet test tests/Shinera.Identity.SqlServerTests/Shinera.Identity.SqlServerTests.csproj -c Release --no-restore --logger 'trx;LogFileName=identity-sqlserver.trx' --results-directory TestResults
 
+      - name: Real API startup and development admin login smoke
+        env:
+          ASPNETCORE_ENVIRONMENT: Development
+          Identity__AllowInsecureHttpForE2E: 'true'
+          Identity__E2E__Enabled: 'true'
+          Identity__E2E__CaptchaCode: 'ABCDE'
+          SHINERA_DEVELOPMENT_ADMIN_PASSWORD: 'Disposable_Only_WriteScope_CI_2026!'
+          DataBaseServer: '127.0.0.1,1433'
+          DataBaseUsername: sa
+          DataBasePassword: 'ShineraSqlCi_Disposable_2026!'
+          Cors: 'http://127.0.0.1:4200'
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet run --project src/Web/Web.csproj --no-launch-profile --urls http://127.0.0.1:5069 > /tmp/shinera-api.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+
+          ready=0
+          for i in $(seq 1 75); do
+            if curl --silent --fail --max-time 3 'http://127.0.0.1:5069/api/system/Auth/captcha/new' > /tmp/shinera-captcha.json; then
+              ready=1
+              break
+            fi
+            if ! kill -0 "$server_pid" 2>/dev/null; then break; fi
+            sleep 2
+          done
+          if [ "$ready" -ne 1 ]; then
+            cat /tmp/shinera-api.log
+            exit 1
+          fi
+
+          token=$(python3 -c 'import json;print(json.load(open("/tmp/shinera-captcha.json"))["token"])')
+          status=$(curl --silent --show-error --output /tmp/shinera-login.json --write-out '%{http_code}' \
+            --request POST 'http://127.0.0.1:5069/api/system/Auth/login' \
+            --data-urlencode grant_type=password \
+            --data-urlencode client_id=postman \
+            --data-urlencode username=admin \
+            --data-urlencode password='Disposable_Only_WriteScope_CI_2026!' \
+            --data-urlencode login_context=system \
+            --data-urlencode scope='openid profile email api offline_access' \
+            --data-urlencode "captchaid=$token" \
+            --data-urlencode userEnteredCaptchaCode=ABCDE)
+          if [ "$status" != 200 ]; then
+            echo "Seeded admin token endpoint returned HTTP $status"
+            cat /tmp/shinera-api.log
+            exit 1
+          fi
+          access_token=$(python3 -c 'import json;print(json.load(open("/tmp/shinera-login.json"))["access_token"])')
+          status=$(curl --silent --show-error --output /tmp/shinera-role-lookup.json \
+            --write-out '%{http_code}' \
+            --header "Authorization: Bearer $access_token" \
+            'http://127.0.0.1:5069/api/system/Roles/lookup')
+          if [ "$status" != 200 ]; then
+            echo "Seeded admin cannot read the protected roles endpoint; HTTP $status"
+            cat /tmp/shinera-api.log
+            exit 1
+          fi
+          echo "PASS: real app migrations/seeding, admin login, and protected System role lookup."
+
       - name: Upload SQL Server test results
         if: always()
         uses: actions/upload-artifact@v4
