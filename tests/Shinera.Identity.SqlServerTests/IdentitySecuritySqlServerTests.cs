@@ -146,6 +146,69 @@ public sealed class IdentitySecuritySqlServerTests
         return authorization.HasSucceeded;
     }
 
+    [Fact]
+    public async Task Tenant_group_grants_are_scoped_and_explicit_user_denial_overrides_inherited_role()
+    {
+        await WithIsolatedDatabaseAsync(async (db, _) =>
+        {
+            var tenantA = new Tenant(null, "Salon A", "group-tenant-a", "localhost");
+            var tenantB = new Tenant(null, "Salon B", "group-tenant-b", "localhost");
+            var user = NewUser(tenantA.Id, "group-user", UserType.Tenant);
+            var role = new Role(tenantA.Id, "stylist", "Tenant A");
+            var permission = new Permission
+            {
+                Code = "CUSTOMERS.VIEW",
+                Name = "customers.view",
+                IsActive = true
+            };
+            var group = new Group
+            {
+                TenantId = tenantA.Id,
+                Name = "Team A",
+                NormalizedName = "TEAM A"
+            };
+            var membership = new UserGroup
+            {
+                TenantId = tenantA.Id, UserId = user.Id, GroupId = group.Id
+            };
+            var groupRole = new GroupRole
+            {
+                TenantId = tenantA.Id, GroupId = group.Id, RoleId = role.Id
+            };
+            var rolePermission = new RolePermission(tenantA.Id, role.Id, permission.Id);
+
+            db.AddRange(tenantA, tenantB, user, role, permission, group, membership,
+                groupRole, rolePermission);
+            await db.SaveChangesAsync();
+
+            var principal = Principal(user, "tenant", tenantId: tenantA.Id, slug: tenantA.Slug);
+            var requirement = new TenantPermissionRequirement("customers", "view");
+            var handler = new TenantPermissionHandler(db);
+            Assert.True(await TenantPermissionAllowedAsync(handler, requirement, principal));
+
+            // Legacy user-level IsGranted=false semantics must not be bypassed by roles.
+            var denial = new UserPermission
+            {
+                TenantId = tenantA.Id,
+                UserId = user.Id,
+                PermissionId = permission.Id,
+                IsGranted = false
+            };
+            db.UserPermissions.Add(denial);
+            await db.SaveChangesAsync();
+            Assert.False(await TenantPermissionAllowedAsync(handler, requirement, principal));
+
+            db.UserPermissions.Remove(denial);
+            await db.SaveChangesAsync();
+            Assert.True(await TenantPermissionAllowedAsync(handler, requirement, principal));
+
+            // A corrupt cross-tenant GroupRole must never convey a permission.
+            groupRole.TenantId = tenantB.Id;
+            await db.SaveChangesAsync();
+            Assert.False(await TenantPermissionAllowedAsync(handler, requirement, principal));
+        });
+    }
+
     private static User NewUser(Guid? tenantId, string username, UserType type)
         => new(tenantId, username, username + "@example.test", "Test", "User", type)
         {
