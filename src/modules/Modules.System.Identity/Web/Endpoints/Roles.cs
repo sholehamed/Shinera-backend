@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.AspNetCore.Builder;
 using Modules.System.Identity.Web.Util;
 using Modules.System.Identity.Infrastructure.Persistence;
