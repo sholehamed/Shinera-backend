@@ -79,6 +79,19 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
         {
             await applicationManager.CreateAsync(descriptor);
         }
+        else
+        {
+            // This client may predate the introduction of the revocation endpoint.
+            // Preserve all existing secrets, grants, redirects and custom settings
+            // instead of overwriting it with the default seed descriptor.
+            var existingDescriptor = new OpenIddictApplicationDescriptor();
+            await applicationManager.PopulateAsync(existingDescriptor, exists);
+
+            if (existingDescriptor.Permissions.Add(OpenIddictConstants.Permissions.Endpoints.Revocation))
+            {
+                await applicationManager.UpdateAsync(exists, existingDescriptor);
+            }
+        }
     }
 
     // Only called in Development. Existing production installations need an
