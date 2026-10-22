@@ -1,4 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shinera.Identity.SqlServerTests" />
+  </ItemGroup>
 	<ItemGroup>
 		<PackageReference Include="OpenIddict.AspNetCore" />
 		<PackageReference Include="OpenIddict.EntityFrameworkCore" />
