@@ -13,7 +13,7 @@ public static class PlatformPermissionCatalog
 {
     public sealed record Definition(string Resource, string Action, string Name)
     {
-        public string Code => new Web.Util.SystemPermissionRequirement(Resource, Action).Key;
+        public string Code => new global::Modules.System.Identity.Web.Util.SystemPermissionRequirement(Resource, Action).Key;
     }
 
     public static readonly Definition[] Definitions =
