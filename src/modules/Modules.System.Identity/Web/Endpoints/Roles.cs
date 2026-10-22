@@ -25,29 +25,43 @@ public class Roles : EndpointGroupBase
                 .MapPut(UpdateRolePermissions, "{roleId:guid}/permissions")
         ;
     }
-    public async Task<Results<NoContent, NotFound, BadRequest>> UpdateRolePermissions(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, Guid roleId, UpdateRolePermissionsCommand command)
+    public async Task<Results<NoContent, NotFound, BadRequest, ForbidHttpResult>> UpdateRolePermissions(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, Guid roleId, UpdateRolePermissionsCommand command)
     {
         command.RoleId = roleId;
         command.StorageTenantId = DefaultSeedData.MasterTenant.Id;
-        await write.ExecuteAsync(http.User, "roles.permissions.replace",
-            async () => await sender.Send(command), roleId);
-        return TypedResults.NoContent();
+        try
+        {
+            await write.ExecuteAsync(http.User, "roles.permissions.replace",
+                async () => await sender.Send(command), roleId);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
     }
     public async Task<Results<Ok<RolePermissionTreeResponseDto>, BadRequest>> RolePermissionsTree(IDispatcher sender, Guid roleId)
     {
         var res = await sender.Query(new RolePermissionsTreeQuery { RoleId = roleId });
         return TypedResults.Ok(res);
     }
-    public async Task RoleChangeState(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, Guid id)
+    public async Task<Results<NoContent, ForbidHttpResult>> RoleChangeState(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, Guid id)
     {
-        await write.ExecuteAsync(http.User, "roles.state.change",
-            async () => await sender.Send(new RoleChangeStateCommand(id)), id);
+        try
+        {
+            await write.ExecuteAsync(http.User, "roles.state.change",
+                async () => await sender.Send(new RoleChangeStateCommand(id)), id);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
     }
 
-    public async Task RoleDelete(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, Guid id)
+    public async Task<Results<NoContent, ForbidHttpResult>> RoleDelete(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, Guid id)
     {
-        await write.ExecuteAsync(http.User, "roles.delete",
-            async () => await sender.Send(new RoleDeleteCommand(id)), id);
+        try
+        {
+            await write.ExecuteAsync(http.User, "roles.delete",
+                async () => await sender.Send(new RoleDeleteCommand(id)), id);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
     }
     public async Task<Results<Ok<List<RoleLookupDto>>, NotFound>> RolesLookup(IDispatcher sender, CancellationToken cancellationToken = default)
     {
@@ -66,21 +80,29 @@ public class Roles : EndpointGroupBase
         var res = await sender.Query(new RoleGetByIdQuery(id), cancellationToken);
         return TypedResults.Ok(res);
     }
-    public async Task<Results<Created<Guid>, BadRequest>> RoleCreate(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, RoleCreateCommand parameter, CancellationToken cancellationToken = default)
+    public async Task<Results<Created<Guid>, BadRequest, ForbidHttpResult>> RoleCreate(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, RoleCreateCommand parameter, CancellationToken cancellationToken = default)
     {
         parameter.StorageTenantId = DefaultSeedData.MasterTenant.Id;
-        var res = await write.ExecuteAsync(http.User, "roles.create",
-            async () => await sender.Send(parameter, cancellationToken),
-            cancellationToken: cancellationToken);
-        return TypedResults.Created(res.ToString(), res);
+        try
+        {
+            var res = await write.ExecuteAsync(http.User, "roles.create",
+                async () => await sender.Send(parameter, cancellationToken),
+                cancellationToken: cancellationToken);
+            return TypedResults.Created(res.ToString(), res);
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
     }
-    public async Task<NoContent> RoleUpdate([FromServices] IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, [FromRoute] Guid id, RoleUpdateCommand parameter, CancellationToken cancellationToken = default)
+    public async Task<Results<NoContent, ForbidHttpResult>> RoleUpdate([FromServices] IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, [FromRoute] Guid id, RoleUpdateCommand parameter, CancellationToken cancellationToken = default)
     {
         parameter.Id = id;
-        await write.ExecuteAsync(http.User, "roles.update",
-            async () => await sender.Send(parameter, cancellationToken),
-            id, cancellationToken);
-        return TypedResults.NoContent();
+        try
+        {
+            await write.ExecuteAsync(http.User, "roles.update",
+                async () => await sender.Send(parameter, cancellationToken),
+                id, cancellationToken);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
     }
 
 
