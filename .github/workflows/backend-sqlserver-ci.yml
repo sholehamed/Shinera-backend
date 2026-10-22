@@ -45,6 +45,9 @@ jobs:
           Identity__AllowInsecureHttpForE2E: 'true'
           Identity__E2E__Enabled: 'true'
           Identity__E2E__CaptchaCode: 'ABCDE'
+          # Only the disposable Development CI database receives bootstrap grants.
+          Identity__PlatformPermissions__EnforceRoleEndpoints: 'true'
+          Identity__PlatformPermissions__BootstrapDevelopmentGrants: 'true'
           SHINERA_DEVELOPMENT_ADMIN_PASSWORD: 'Disposable_Only_WriteScope_CI_2026!'
           DataBaseServer: '127.0.0.1,1433'
           DataBaseUsername: sa
