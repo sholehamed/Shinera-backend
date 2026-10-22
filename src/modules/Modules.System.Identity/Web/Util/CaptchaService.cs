@@ -1,4 +1,6 @@
 ﻿using Microsoft.AspNetCore.DataProtection;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Hosting;
 using SkiaSharp;
 using System.Security.Cryptography;
 using System.Text;
@@ -6,13 +8,35 @@ using System.Text.Json;
 
 namespace Modules.System.Identity.Web.Util
 {
-    public sealed class CaptchaService(IDataProtectionProvider dataProtectionProvider)
+    public sealed class CaptchaService
     {
-        private readonly IDataProtector _protector = dataProtectionProvider.CreateProtector("OfflineCaptcha.v1");
+        private readonly IDataProtector _protector;
+        private readonly string? _e2eCode;
+
+        public CaptchaService(IDataProtectionProvider provider)
+        {
+            _protector = provider.CreateProtector("OfflineCaptcha.v1");
+        }
+
+        public CaptchaService(IDataProtectionProvider provider, IConfiguration configuration,
+            IHostEnvironment environment) : this(provider)
+        {
+            // Fully opt-in, Development-only deterministic CAPTCHA for disposable CI.
+            // This never changes CAPTCHA validation or provides a public bypass route.
+            var code = configuration["Identity:E2E:CaptchaCode"];
+            if (environment.IsDevelopment() &&
+                configuration.GetValue<bool>("Identity:E2E:Enabled") &&
+                configuration.GetValue<bool>("Identity:AllowInsecureHttpForE2E") &&
+                code is { Length: 5 } &&
+                code.All(c => "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".Contains(c)))
+            {
+                _e2eCode = code;
+            }
+        }
 
         public CaptchaChallenge CreateChallenge()
         {
-            var code = GenerateCode(5);
+            var code = _e2eCode ?? GenerateCode(5);
 
             var payload = new CaptchaPayload
             {

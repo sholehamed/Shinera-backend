@@ -1,6 +1,7 @@
 ﻿using Application.SharedKernel;
 using Infrastructure.SharedKernel;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -38,6 +39,8 @@ namespace Modules.System.Identity
             var assembly = Assembly.GetExecutingAssembly();
             services.AddCustomCqrs<AppMappingProfile>(assembly); services.AddDataProtection();
             services.AddScoped<CaptchaService>();
+            services.AddScoped<RefreshGrantValidator>();
+            services.AddScoped<IAuthorizationHandler, ActiveSystemAdministratorHandler>();
             services.AddScoped<IIdentityDbContext>(provider =>
            provider.GetRequiredService<IdentityDbContext>());
             services.AddScoped<IPermissionResolver, RoutePermissionResolver>();
@@ -55,6 +58,7 @@ namespace Modules.System.Identity
                     options.SetTokenEndpointUris("api/system/Auth/login");
                     options.SetAuthorizationEndpointUris("api/connect/authorize");
                     options.SetEndSessionEndpointUris("api/system/Auth/logout");
+                    options.SetRevocationEndpointUris("api/system/Auth/revoke");
                     options.SetUserInfoEndpointUris("api/system/Auth/userinfo");
 
                     options.AllowPasswordFlow();
@@ -108,8 +112,7 @@ namespace Modules.System.Identity
                 // explicitly hold the platform administrator role.
                 options.AddPolicy("SystemAdministrator", policy =>
                     policy.RequireAuthenticatedUser()
-                          .RequireAssertion(context =>
-                              SystemAuthorizationPolicies.IsSystemAdministrator(context.User)));
+                          .AddRequirements(new ActiveSystemAdministratorRequirement()));
             });
             return services;
         }

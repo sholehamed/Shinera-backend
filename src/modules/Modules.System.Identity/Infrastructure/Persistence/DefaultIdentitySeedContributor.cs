@@ -1,5 +1,6 @@
 ﻿using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Modules.System.Identity.Domain.Entities;
 using Modules.System.Identity.Infrastructure.Persistence.Contexts;
@@ -16,6 +17,7 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
         var db = serviceProvider.GetRequiredService<IdentityDbContext>();
         var passwordHasher = serviceProvider.GetRequiredService<IPasswordHasher<User>>();
         var applicationManager = serviceProvider.GetRequiredService<IOpenIddictApplicationManager>();
+        var configuration = serviceProvider.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
         await SeedOpenIddictAsync(applicationManager);
         var masterTenant = await EnsureTenantAsync(db, DefaultSeedData.MasterTenant);
 
@@ -26,6 +28,12 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
                 ?? "123456"; // Legacy local-only default; override via environment variable.
             await EnsureUserAsync(db, passwordHasher, DefaultSeedData.Users.ToArray(), developmentPassword);
             await EnsureDevelopmentSystemAdminRoleAsync(db, masterTenant.Id);
+            if (configuration.GetValue<bool>("Identity:E2E:Enabled"))
+            {
+                await EnsureUserAsync(db, passwordHasher,
+                    [new User(null, "e2e-viewer", "e2e-viewer@localhost.test",
+                        "E2E", "Viewer", UserType.System)], developmentPassword);
+            }
         }
         //await EnsureTenantsAsync(db, DefaultSeedData.Tenants);
 
@@ -54,6 +62,7 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
             {
                 OpenIddictConstants.Permissions.Endpoints.Authorization,
                 OpenIddictConstants.Permissions.Endpoints.Token,
+                OpenIddictConstants.Permissions.Endpoints.Revocation,
                 OpenIddictConstants.Permissions.GrantTypes.AuthorizationCode,
                 OpenIddictConstants.Permissions.GrantTypes.RefreshToken,
                 OpenIddictConstants.Permissions.GrantTypes.Password,
@@ -69,6 +78,19 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
         if (exists is null)
         {
             await applicationManager.CreateAsync(descriptor);
+        }
+        else
+        {
+            // This client may predate the introduction of the revocation endpoint.
+            // Preserve all existing secrets, grants, redirects and custom settings
+            // instead of overwriting it with the default seed descriptor.
+            var existingDescriptor = new OpenIddictApplicationDescriptor();
+            await applicationManager.PopulateAsync(existingDescriptor, exists);
+
+            if (existingDescriptor.Permissions.Add(OpenIddictConstants.Permissions.Endpoints.Revocation))
+            {
+                await applicationManager.UpdateAsync(exists, existingDescriptor);
+            }
         }
     }
 
@@ -305,7 +327,7 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
                 x.TenantId == seed.TenantId && x.NormalizedUserName == normalizedUserName);
 
             if (user is not null)
-                return;
+                continue;
 
 
             seed.TenantId = seed.TenantId;
