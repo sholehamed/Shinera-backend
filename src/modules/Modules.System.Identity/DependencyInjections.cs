@@ -42,6 +42,7 @@ namespace Modules.System.Identity
             services.AddScoped<RefreshGrantValidator>();
             services.AddScoped<IAuthorizationHandler, ActiveSystemAdministratorHandler>();
             services.AddScoped<IAuthorizationHandler, TenantPermissionHandler>();
+            services.AddScoped<IAuthorizationHandler, SystemPermissionHandler>();
             services.AddScoped<IIdentityDbContext>(provider =>
            provider.GetRequiredService<IdentityDbContext>());
             services.AddScoped<IPermissionResolver, RoutePermissionResolver>();
