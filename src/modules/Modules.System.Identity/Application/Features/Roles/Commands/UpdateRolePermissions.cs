@@ -6,6 +6,8 @@ namespace Modules.System.Identity.Application.Features.Roles.Commands
 {
     public sealed class UpdateRolePermissionsCommand : ICommand
     {
+        [System.Text.Json.Serialization.JsonIgnore]
+        public Guid StorageTenantId { get; set; }
         public Guid? RoleId { get; set; }
 
         public List<Guid> PermissionIds { get; set; } = new();
@@ -24,6 +26,8 @@ namespace Modules.System.Identity.Application.Features.Roles.Commands
             UpdateRolePermissionsCommand request,
             CancellationToken cancellationToken)
         {
+            if (request.StorageTenantId == Guid.Empty)
+                throw new UnauthorizedAccessException("A verified storage scope is required.");
             var permissionIds = request.PermissionIds
                 .Where(id => id != Guid.Empty)
                 .Distinct()
@@ -31,7 +35,7 @@ namespace Modules.System.Identity.Application.Features.Roles.Commands
 
             var roleExists = await _context.Roles
                 .AsNoTracking()
-                .AnyAsync(role => role.Id == request.RoleId, cancellationToken);
+                .AnyAsync(role => role.Id == request.RoleId && role.TenantId == request.StorageTenantId, cancellationToken);
 
             if (!roleExists)
             {
@@ -52,17 +56,13 @@ namespace Modules.System.Identity.Application.Features.Roles.Commands
             }
 
             var existingRolePermissions = await _context.RolePermissions
-                .Where(rolePermission => rolePermission.RoleId == request.RoleId)
+                .Where(rolePermission => rolePermission.RoleId == request.RoleId && rolePermission.TenantId == request.StorageTenantId)
                 .ToListAsync(cancellationToken);
 
             _context.RolePermissions.RemoveRange(existingRolePermissions);
 
             var newRolePermissions = validPermissionIds.Select(permissionId =>
-                new RolePermission
-                {
-                    RoleId = request.RoleId!.Value,
-                    PermissionId = permissionId
-                });
+                new RolePermission(request.StorageTenantId, request.RoleId!.Value, permissionId));
 
             await _context.RolePermissions.AddRangeAsync(
                 newRolePermissions,
