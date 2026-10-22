@@ -9,7 +9,7 @@ public class MenuCategories : EndpointGroupBase
 {
     public override void Map(WebApplication app)
     {
-        app.MapGroup(this)
+        app.MapGroup(this).RequireAuthorization("SystemAdministrator")
 
             .MapGet(MenuCategoryGetList, "list")
             .MapGet(MenuCategoryGetById, "{id}")

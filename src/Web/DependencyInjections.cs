@@ -13,7 +13,7 @@ namespace Server
             builder.Services.AddOpenApi();
             builder.Services.AddAntiforgery();
             builder.Services.AddMediaStorage(builder.Configuration);
-            builder.Services.AddIdentityModule(builder.Configuration);
+            builder.Services.AddIdentityModule(builder.Configuration, builder.Environment);
             builder.Services.AddScalarClientGeneration();
 
             // Salon Modules

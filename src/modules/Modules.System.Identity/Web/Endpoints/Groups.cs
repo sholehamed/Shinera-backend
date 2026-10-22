@@ -10,7 +10,7 @@ namespace Groups.System.Identity.Web.Endpoints
     {
         public override void Map(WebApplication app)
         {
-            app.MapGroup(this)
+            app.MapGroup(this).RequireAuthorization("SystemAdministrator")
 
                 .MapPost(GroupPagedList, "pagedList")
                 .MapGet(GroupGetById, "{id}")
