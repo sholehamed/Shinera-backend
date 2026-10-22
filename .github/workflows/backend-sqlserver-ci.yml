@@ -1,0 +1,49 @@
+name: Backend SQL Server authorization tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sqlserver-authorization:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: 'Y'
+          MSSQL_SA_PASSWORD: 'ShineraSqlCi_Disposable_2026!'
+          MSSQL_PID: Developer
+          MSSQL_MEMORY_LIMIT_MB: '1600'
+        ports:
+          - 1433:1433
+    env:
+      SHINERA_SQLSERVER_TEST_CONNECTION: 'Server=127.0.0.1,1433;Database=master;User Id=sa;Password=ShineraSqlCi_Disposable_2026!;Encrypt=False;TrustServerCertificate=True;Connect Timeout=30'
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 10
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Restore SQL Server test project
+        run: dotnet restore tests/Shinera.Identity.SqlServerTests/Shinera.Identity.SqlServerTests.csproj
+
+      - name: Run SQL Server migrations and authorization regressions
+        run: dotnet test tests/Shinera.Identity.SqlServerTests/Shinera.Identity.SqlServerTests.csproj -c Release --no-restore --logger 'trx;LogFileName=identity-sqlserver.trx' --results-directory TestResults
+
+      - name: Upload SQL Server test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: identity-sqlserver-test-results
+          path: TestResults/
+          if-no-files-found: ignore
+          retention-days: 7
