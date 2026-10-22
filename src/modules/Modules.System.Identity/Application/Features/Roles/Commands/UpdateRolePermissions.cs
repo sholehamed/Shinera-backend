@@ -6,7 +6,7 @@ namespace Modules.System.Identity.Application.Features.Roles.Commands
 {
     public sealed class UpdateRolePermissionsCommand : ICommand
     {
-        [System.Text.Json.Serialization.JsonIgnore]
+        [global::System.Text.Json.Serialization.JsonIgnore]
         public Guid StorageTenantId { get; set; }
         public Guid? RoleId { get; set; }
 
