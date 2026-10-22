@@ -7,7 +7,7 @@ namespace Modules.System.Identity.Infrastructure.Persistence.Interceptors;
 /// Infrastructure-owned write overrides. Query-filter bypass is intentionally NOT
 /// a write bypass. Only trusted infrastructure code can open these scopes.
 /// </summary>
-internal sealed class TrustedTenantWriteScope(ILogger<TrustedTenantWriteScope> logger)
+public sealed class TrustedTenantWriteScope(ILogger<TrustedTenantWriteScope> logger)
 {
     private int _bootstrapDepth;
     private Guid? _platformTenant;
