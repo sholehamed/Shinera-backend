@@ -1,3 +1,5 @@
+using System.Security.Claims;
+using OpenIddict.Abstractions;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -263,6 +265,75 @@ public sealed class TenantWriteIsolationSqlServerTests
             Assert.Equal(permission.Id, (await guarded.RolePermissions.IgnoreQueryFilters(["tenant"])
                 .AsNoTracking().SingleAsync(x => x.RoleId == target.Id)).PermissionId);
             Assert.False(trusted.AllowsPlatformTenant(scope));
+        });
+    }
+
+    [Fact]
+    public async Task Platform_master_write_requires_live_master_role_and_releases_scopes()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guard, trusted) =>
+        {
+            var masterId = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(masterId, null, "Platform", "platform-scope-test", "localhost");
+            var foreign = new Tenant(null, "Foreign tenant", "foreign-scope-test", "localhost");
+            var actor = new User(null, "scope-admin", "scope-admin@example.test",
+                "Scope", "Admin", UserType.System)
+            {
+                NormalizedUserName = "SCOPE-ADMIN",
+                NormalizedEmail = "SCOPE-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only",
+                SecurityStamp = "test-security-stamp"
+            };
+            var role = new Role(masterId, "superadmin", "Platform admin");
+            var membership = new UserRole(masterId, actor.Id, role.Id);
+            setup.AddRange(master, foreign, actor, role, membership);
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, isSuperAdmin: true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var access = new AuthorizedPlatformMasterWrite(guard, tenant, trusted,
+                NullLogger<AuthorizedPlatformMasterWrite>.Instance);
+
+            guard.Roles.Add(new Role(masterId, "outside-forbidden", null));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => guard.SaveChangesAsync());
+            guard.ChangeTracker.Clear();
+
+            using (await access.BeginAsync(principal))
+            {
+                var created = new Role(masterId, "platform-created", "Allowed only while scoped");
+                guard.Roles.Add(created);
+                await guard.SaveChangesAsync();
+                Assert.Equal(masterId, created.TenantId);
+
+                guard.Roles.Add(new Role(foreign.Id, "foreign-forbidden", null));
+                await Assert.ThrowsAsync<UnauthorizedAccessException>(() => guard.SaveChangesAsync());
+                guard.ChangeTracker.Clear();
+            }
+
+            Assert.False(tenant.IsFilterDisabled);
+            guard.Roles.Add(new Role(masterId, "after-scope-forbidden", null));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => guard.SaveChangesAsync());
+            guard.ChangeTracker.Clear();
+
+            // A stale JWT and TenantContext claiming SuperAdmin cannot bypass
+            // an actual role revocation in the persisted master definition scope.
+            setup.UserRoles.Remove(membership);
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => access.BeginAsync(principal));
+            Assert.False(tenant.IsFilterDisabled);
+
+            // An account with an injected tenant-id claim is not System context.
+            var forged = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim("tenant_id", foreign.Id.ToString()),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => access.BeginAsync(forged));
         });
     }
 
