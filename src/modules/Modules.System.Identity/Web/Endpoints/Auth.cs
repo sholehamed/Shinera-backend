@@ -154,16 +154,6 @@ CancellationToken cancellationToken)
             return Results.SignIn(result.Principal!,
                 authenticationScheme: OpenIddictServerAspNetCoreDefaults.AuthenticationScheme);
         }
-        string login_context = "tenant";
-        login_context = request.GetParameter("login_context")!.Value.ToString()!;
-        if (login_context is not ("system" or "tenant"))
-            return Results.BadRequest(new
-            {
-                error = "invalid_request",
-                error_description = "Invalid login context."
-            });
-        var t = captchaService.Validate(token, input);
-
         if (!request.IsPasswordGrantType())
         {
             return Results.BadRequest(new
@@ -171,6 +161,24 @@ CancellationToken cancellationToken)
                 error = OpenIddictConstants.Errors.UnsupportedGrantType,
                 error_description = "The specified grant type is not supported."
             });
+        }
+
+        var login_context = request.GetParameter("login_context")?.ToString();
+        if (login_context is not ("system" or "tenant"))
+            return Results.BadRequest(new
+            {
+                error = "invalid_request",
+                error_description = "Invalid login context."
+            });
+        if (!captchaService.Validate(token.ToString(), input.ToString()))
+        {
+            return Results.Forbid(
+                authenticationSchemes: [OpenIddictServerAspNetCoreDefaults.AuthenticationScheme],
+                properties: new AuthenticationProperties(new Dictionary<string, string?>
+                {
+                    [OpenIddictServerAspNetCoreConstants.Properties.Error] = OpenIddictConstants.Errors.InvalidGrant,
+                    [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "Invalid or expired CAPTCHA."
+                }));
         }
         if (login_context == "tenant")
         {
@@ -239,7 +247,6 @@ CancellationToken cancellationToken)
                         [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "User account is locked."
                     }));
             }
-            string s = passwordHasher.HashPassword(user, request.Password);
             var passwordVerification = passwordHasher.VerifyHashedPassword(user, user.PasswordHash, request.Password);
             if (passwordVerification == PasswordVerificationResult.Failed)
             {
@@ -413,7 +420,6 @@ CancellationToken cancellationToken)
                         [OpenIddictServerAspNetCoreConstants.Properties.ErrorDescription] = "User account is locked."
                     }));
             }
-            string s = passwordHasher.HashPassword(user, request.Password);
             var passwordVerification = passwordHasher.VerifyHashedPassword(user, user.PasswordHash, request.Password);
             if (passwordVerification == PasswordVerificationResult.Failed)
             {

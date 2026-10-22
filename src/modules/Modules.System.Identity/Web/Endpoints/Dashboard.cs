@@ -6,7 +6,7 @@ namespace Modules.System.Identity.Web.Endpoints
     {
         public override void Map(WebApplication app)
         {
-            app.MapGroup(this)
+            app.MapGroup(this).RequireAuthorization("SystemAdministrator")
 
                 .MapGet(GetSuperDashboard, "super-dashboard")
 

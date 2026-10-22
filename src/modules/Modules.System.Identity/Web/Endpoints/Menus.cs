@@ -9,7 +9,7 @@ public class Menus : EndpointGroupBase
 {
     public override void Map(WebApplication app)
     {
-        app.MapGroup(this)
+        app.MapGroup(this).RequireAuthorization("SystemAdministrator")
             .MapPost(ReorderMenus, "reorder")
             .MapGet(GetUserMenus, "getUserMenus", configure: x => x.RequireAuthorization())
             .MapGet(MenuGetById, "{id}")

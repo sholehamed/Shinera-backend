@@ -8,7 +8,7 @@ public class Tenants : EndpointGroupBase
 {
     public override void Map(WebApplication app)
     {
-        app.MapGroup(this)
+        app.MapGroup(this).RequireAuthorization("SystemAdministrator")
 
             .MapPost(TenantPagedList, "pagedList")
             .MapGet(TenantResolveBySlug, "resolve", configure: x => x.AllowAnonymous())

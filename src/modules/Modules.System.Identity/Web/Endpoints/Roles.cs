@@ -11,7 +11,7 @@ public class Roles : EndpointGroupBase
 {
     public override void Map(WebApplication app)
     {
-        app.MapGroup(this)
+        app.MapGroup(this).RequireAuthorization("SystemAdministrator")
              .MapPost(RolePagedList, "pagedList")
                 .MapGet(RoleGetById, "{id}")
             .MapGet(RolesLookup, "lookup", configure: x => x.RequireAuthorization())

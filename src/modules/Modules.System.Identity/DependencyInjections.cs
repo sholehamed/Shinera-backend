@@ -92,7 +92,20 @@ namespace Modules.System.Identity
                 options.DefaultChallengeScheme = OpenIddictValidationAspNetCoreDefaults.AuthenticationScheme;
             });
             services.AddScoped<ISeedContributor, DefaultIdentitySeedContributor>();
-            services.AddAuthorization();
+            services.AddAuthorization(options =>
+            {
+                // Privileged System API endpoints are not tenant endpoints.
+                // A System account is necessary, but not sufficient: the user must
+                // explicitly hold the platform administrator role.
+                options.AddPolicy("SystemAdministrator", policy =>
+                    policy.RequireAuthenticatedUser()
+                          .RequireAssertion(context =>
+                              context.User.HasClaim("account_type", "system") &&
+                              !context.User.HasClaim(claim => claim.Type == "tenant_id") &&
+                              context.User.FindAll(OpenIddictConstants.Claims.Role)
+                                  .Any(claim => string.Equals(claim.Value, "superadmin",
+                                      StringComparison.OrdinalIgnoreCase))));
+            });
             return services;
         }
         public static WebApplication UseIdentityModule(this WebApplication app,IConfiguration configuration)

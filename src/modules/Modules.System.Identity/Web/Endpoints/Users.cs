@@ -9,7 +9,7 @@ public class Users : EndpointGroupBase
 {
     public override void Map(WebApplication app)
     {
-        app.MapGroup(this)
+        app.MapGroup(this).RequireAuthorization("SystemAdministrator")
 
             .MapPost(UserPagedList, "pagedList")
             .MapGet(UserGetById, "{id}")
