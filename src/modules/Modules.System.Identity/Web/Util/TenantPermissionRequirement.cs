@@ -77,6 +77,14 @@ public sealed class TenantPermissionHandler(IIdentityDbContext db)
         // Under the current Identity schema User.TenantId is the home-tenant
         // membership. Cross-tenant access needs an explicit verified membership
         // and is intentionally NOT granted by this Tenant-only requirement.
+        // Preserve the established Identity model: a user-level explicit
+        // revocation blocks inherited grants from roles and groups.
+        var explicitlyDenied = await db.UserPermissions.IgnoreQueryFilters(["tenant"]).AsNoTracking()
+            .AnyAsync(x => x.UserId == userId && x.TenantId == tenantId &&
+                !x.IsGranted && x.Permission.IsActive && x.Permission.Code == requirement.Key, ct);
+        if (explicitlyDenied)
+            return;
+
         var direct = await db.UserPermissions.IgnoreQueryFilters(["tenant"]).AsNoTracking()
             .AnyAsync(x => x.UserId == userId && x.TenantId == tenantId &&
                 x.IsGranted && x.Permission.IsActive && x.Permission.Code == requirement.Key, ct);
@@ -98,8 +106,10 @@ public sealed class TenantPermissionHandler(IIdentityDbContext db)
         }
 
         var viaGroup = await db.UserGroups.IgnoreQueryFilters(["tenant"]).AsNoTracking()
-            .AnyAsync(x => x.UserId == userId && x.TenantId == tenantId && x.Group.IsActive &&
-                x.Group.GroupRoles.Any(gr => gr.Role.TenantId == tenantId && gr.Role.IsActive &&
+            .AnyAsync(x => x.UserId == userId && x.TenantId == tenantId &&
+                x.Group.TenantId == tenantId && x.Group.IsActive &&
+                x.Group.GroupRoles.Any(gr => gr.TenantId == tenantId &&
+                    gr.Role.TenantId == tenantId && gr.Role.IsActive &&
                     gr.Role.RolePermissions.Any(rp => rp.TenantId == tenantId &&
                         rp.Permission.IsActive && rp.Permission.Code == requirement.Key)), ct);
 
