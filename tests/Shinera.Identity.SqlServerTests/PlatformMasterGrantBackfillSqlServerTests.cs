@@ -111,6 +111,42 @@ public sealed class PlatformMasterGrantBackfillSqlServerTests
         });
     }
 
+    [Fact]
+    public async Task Invalid_reviewer_or_database_scope_fails_closed_without_grants_or_audit()
+    {
+        await WithDatabaseAsync(async (db, databaseName) =>
+        {
+            var (role, actor, reviewer, permissions) = await SeedAsync(db);
+            var grant = new PlatformMasterGrantBackfill.Grant(
+                Guid.NewGuid(), permissions[0].Id);
+            var approved = new PlatformMasterGrantBackfill.Manifest(
+                DefaultSeedData.MasterTenant.Id, role.Id, actor.Id,
+                reviewer.Id, databaseName, [], [grant]);
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                PlatformMasterGrantBackfill.ApplyAsync(
+                    db, approved with { DatabaseName = databaseName + "_other" }));
+
+            var reviewerMembership = await db.UserRoles
+                .IgnoreQueryFilters(["tenant"])
+                .SingleAsync(x => x.RoleId == role.Id && x.UserId == reviewer.Id);
+            db.UserRoles.Remove(reviewerMembership);
+            await db.SaveChangesAsync();
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                PlatformMasterGrantBackfill.ApplyAsync(db, approved));
+
+            Assert.False(await db.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .AnyAsync(x => x.Id == grant.AssignmentId));
+
+            var audit = await db.Database.SqlQueryRaw<long>(
+                "SELECT COUNT_BIG(*) AS [Value] FROM [dbo].[PlatformGrantAuditEntries] " +
+                "WHERE [Kind]='RolePermission' AND [TargetId]={0} AND [RelatedId]={1}",
+                role.Id, grant.PermissionId).SingleAsync();
+            Assert.Equal(0, audit);
+        });
+    }
+
     private static async Task<(Role role, User actor, User reviewer, List<Permission> permissions)>
         SeedAsync(IdentityDbContext db)
     {
