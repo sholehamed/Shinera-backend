@@ -1,4 +1,6 @@
 using System.Security.Claims;
+using System.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -46,14 +48,26 @@ public sealed class PlatformAccessDenialAudit(IdentityDbContext database)
         var master = DefaultSeedData.MasterTenant.Id;
         var outcome = challenged ? "challenge" : "forbidden";
 
-        // This is a new SQL command and autocommit, outside the rejected action's
-        // transaction. No EF DbSet/SaveChanges hook can mutate audit history.
-        await database.Database.ExecuteSqlInterpolatedAsync($"""
+        // A completely separate SQL connection prevents accidental enlistment
+        // in the rejected request's DbContext transaction/change tracker.
+        // Explicit typed parameters; never concatenate client-controlled data.
+        await using var connection = new SqlConnection(
+            database.Database.GetDbConnection().ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand("""
             INSERT INTO [dbo].[PlatformAccessDenialAuditEntries]
                 ([Id], [TenantId], [ActorUserId], [HttpMethod], [RouteTemplate], [Outcome])
             VALUES
-                ({id}, {master}, {actorId}, {method}, {template}, {outcome})
-            """, cancellationToken);
+                (@id, @master, @actor, @method, @route, @outcome)
+            """, connection);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = id;
+        command.Parameters.Add("@master", SqlDbType.UniqueIdentifier).Value = master;
+        command.Parameters.Add("@actor", SqlDbType.UniqueIdentifier).Value =
+            actorId.HasValue ? actorId.Value : DBNull.Value;
+        command.Parameters.Add("@method", SqlDbType.NVarChar, 8).Value = method;
+        command.Parameters.Add("@route", SqlDbType.NVarChar, 256).Value = template;
+        command.Parameters.Add("@outcome", SqlDbType.NVarChar, 16).Value = outcome;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }
 
