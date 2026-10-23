@@ -19,6 +19,7 @@ BASE = os.environ.get("SHINERA_E2E_BASE_URL", "http://127.0.0.1:5069").rstrip("/
 PASSWORD = os.environ["SHINERA_DEVELOPMENT_ADMIN_PASSWORD"]
 GROUP_ID = "7fbf4183-c8ab-4e2e-805d-65fd7fa95247"
 PERMISSION_ID = "45129362-d8b8-4bde-8600-98745e311923"
+PERMISSION_RESOURCE_ID = "d051bd62-6828-421c-a0bf-70ca4ed29ae3"
 FOREIGN_ID = "00000000-0000-0000-0000-000000000001"
 PASSED = 0
 
@@ -150,6 +151,85 @@ def run():
           data={"code": "ROLES.CREATE", "name": "Forbidden catalog overwrite",
                 "resourceId": FOREIGN_ID, "isActive": True,
                 "permissionResources": []})
+
+
+    # Complete the signed-OpenIddict Permission CRUD HTTP matrix while the
+    # actual System administrator is still privileged. Never forge principals.
+    permission_payload = {
+        "code": "E2E.PERMISSION-CRUD", "resourceId": PERMISSION_RESOURCE_ID,
+        "name": "E2E HTTP Permission", "description": "Disposable", "isActive": True,
+        "permissionResources": [],
+    }
+    check("POST", perms, 401, data=permission_payload)
+    check("GET", perms + "/" + PERMISSION_ID, 401)
+    check("POST", perms, 403, token=viewer, data=permission_payload)
+    check("PUT", perms + "/" + PERMISSION_ID, 403, token=viewer,
+          data=permission_payload)
+    check("DELETE", perms + "/" + PERMISSION_ID, 403, token=viewer)
+    check("POST", perms, 403, token=tenant, data=permission_payload)
+    check("PATCH", perms + "/" + PERMISSION_ID, 403, token=tenant)
+
+    missing = FOREIGN_ID
+    check("GET", perms + "/" + missing, 404, token=admin)
+    check("PUT", perms + "/" + missing, 404, token=admin,
+          data=permission_payload)
+    check("DELETE", perms + "/" + missing, 404, token=admin)
+    check("PATCH", perms + "/" + missing, 404, token=admin)
+    check("POST", perms, 400, token=admin,
+          data={**permission_payload, "resourceId": missing})
+    check("POST", perms, 400, token=admin,
+          data={**permission_payload, "resourceId": str(uuid.UUID(int=0))})
+    check("POST", perms, 400, token=admin,
+          data={**permission_payload, "code": "   "})
+    check("POST", perms, 400, token=admin,
+          data={**permission_payload, "name": ""})
+    check("POST", perms, 400, token=admin,
+          data={**permission_payload,
+                "permissionResources": [{"type": "API", "id": missing}]})
+    check("POST", perms, 400, token=admin,
+          data={**permission_payload,
+                "permissionResources": [{"type": "UNKNOWN", "id": missing}]})
+
+    # Reserved catalog definitions are immutable via every write verb.
+    for method in ("PUT", "DELETE", "PATCH"):
+        check(method, perms + "/" + reserved_permission_id, 403,
+              token=admin, data=permission_payload if method == "PUT" else None)
+    check("PUT", perms + "/" + PERMISSION_ID, 403, token=admin,
+          data={**permission_payload, "code": "PERMISSIONS.CREATE"})
+
+    permission_id = str(uuid.UUID(json_value(
+        check("POST", perms, 201, token=admin, data=permission_payload))))
+    created_perm = json_value(
+        check("GET", perms + "/" + permission_id, 200, token=admin))
+    assert str(uuid.UUID(created_perm["id"])) == permission_id
+    assert created_perm["code"] == "E2E.PERMISSION-CRUD"
+    assert str(uuid.UUID(created_perm["resourceId"])) == PERMISSION_RESOURCE_ID
+
+    check("POST", perms, 409, token=admin, data=permission_payload)
+    check("PUT", perms + "/" + permission_id, 400, token=admin,
+          data={**permission_payload, "name": " "})
+    check("PUT", perms + "/" + permission_id, 400, token=admin,
+          data={**permission_payload, "resourceId": missing})
+    check("PUT", perms + "/" + permission_id, 400, token=admin,
+          data={**permission_payload,
+                "permissionResources": [{"type": "UI", "id": missing}]})
+    updated_perm = {**permission_payload,
+                    "code": "e2e.permission-crud-updated",
+                    "name": "E2E Updated Permission"}
+    check("PUT", perms + "/" + permission_id, 204,
+          token=admin, data=updated_perm)
+    persisted_perm = json_value(
+        check("GET", perms + "/" + permission_id, 200, token=admin))
+    assert persisted_perm["code"] == "E2E.PERMISSION-CRUD-UPDATED"
+    assert persisted_perm["name"] == "E2E Updated Permission"
+    check("PATCH", perms + "/" + permission_id, 204, token=admin)
+    inactive_perm = json_value(
+        check("GET", perms + "/" + permission_id, 200, token=admin))
+    assert inactive_perm["isActive"] is False
+    check("PATCH", perms + "/" + permission_id, 204, token=admin)
+    check("DELETE", perms + "/" + permission_id, 204, token=admin)
+    check("GET", perms + "/" + permission_id, 404, token=admin)
+    check("DELETE", perms + "/" + permission_id, 404, token=admin)
 
     role_id = str(uuid.UUID(json_value(check("POST", roles, 201,
                                              token=admin, data=role_payload))))
