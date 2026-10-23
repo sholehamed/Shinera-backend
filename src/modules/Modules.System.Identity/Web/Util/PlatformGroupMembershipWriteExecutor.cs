@@ -76,15 +76,26 @@ public sealed class PlatformGroupMembershipWriteExecutor(
             using var grant = trustedWrites.BeginPlatformGrantMutation(
                 PlatformGrantMutationKind.GroupMembers, groupId);
 
-            var existing = await database.UserGroups.AsNoTracking()
-                .Where(x => x.TenantId == master && x.GroupId == groupId &&
-                            members.Contains(x.UserId))
+            // Snapshot the entire group, not only requested user IDs. This
+            // prevents a pre-tracked, unvalidated membership for the same group
+            // from hitchhiking through the legacy command's SaveChanges.
+            var before = await database.UserGroups.AsNoTracking()
+                .Where(x => x.TenantId == master && x.GroupId == groupId)
                 .Select(x => x.UserId).ToListAsync(cancellationToken);
-            var additions = members.Except(existing).ToArray();
+            var expectedAdditions = members.Except(before).ToHashSet();
 
             // Legacy handler and audit writer share the exact same scoped DbContext.
-            // A failed INSERT rolls back the entire membership batch.
+            // A failed INSERT or mismatched write rolls back the entire batch.
             await execute();
+            var after = await database.UserGroups.AsNoTracking()
+                .Where(x => x.TenantId == master && x.GroupId == groupId)
+                .Select(x => x.UserId).ToListAsync(cancellationToken);
+            var additions = after.Except(before).ToArray();
+            if (before.Except(after).Any() ||
+                !additions.ToHashSet().SetEquals(expectedAdditions))
+                throw new UnauthorizedAccessException(
+                    "Group membership mutation differs from the validated request.");
+
             foreach (var memberId in additions)
                 await PlatformGrantAuditWriter.RecordAsync(database, actorId,
                     "UserGroup", groupId, memberId, "grant",
