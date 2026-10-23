@@ -115,7 +115,7 @@ public class Roles : EndpointGroupBase
         {
             var res = await write.ExecuteAsync(http.User, "roles.create",
                 async () => await sender.Send(parameter, cancellationToken),
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken, newRoleName: parameter.Name);
             return TypedResults.Created(res.ToString(), res);
         }
         catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
@@ -127,7 +127,7 @@ public class Roles : EndpointGroupBase
         {
             await write.ExecuteAsync(http.User, "roles.update",
                 async () => await sender.Send(parameter, cancellationToken),
-                id, cancellationToken);
+                id, cancellationToken, newRoleName: parameter.Name);
             return TypedResults.NoContent();
         }
         catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
