@@ -60,7 +60,8 @@ public class Roles : EndpointGroupBase
         try
         {
             await write.ExecuteAsync(http.User, "roles.permissions.replace",
-                async () => await sender.Send(command), roleId);
+                async () => await sender.Send(command), roleId,
+                expectedPermissionIds: command.PermissionIds);
             return TypedResults.NoContent();
         }
         catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
