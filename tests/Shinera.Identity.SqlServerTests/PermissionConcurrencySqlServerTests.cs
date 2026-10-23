@@ -3,7 +3,6 @@ using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Modules.System.Identity.Domain.Entities;
 using Modules.System.Identity.Infrastructure.Persistence.Contexts;
-using Modules.System.Identity.Infrastructure.Persistence.Interceptors;
 using Xunit;
 
 namespace Shinera.Identity.SqlServerTests;
@@ -19,13 +18,10 @@ public sealed class PermissionConcurrencySqlServerTests
     {
         await WithDatabaseAsync(async (connection, options) =>
         {
-            using var gate = new SemaphoreSlim(0, 2);
-
             async Task<bool> TryCreateAsync(string code)
             {
                 await using var db = Context(options);
                 // Both writers are independently connected and start together.
-                gate.Release();
                 await Task.Yield();
                 try
                 {
@@ -198,7 +194,7 @@ public sealed class PermissionConcurrencySqlServerTests
             ConnectTimeout = 30
         };
         var options = new DbContextOptionsBuilder<IdentityDbContext>()
-            .UseSqlServer(cs.ConnectionString, sql => sql.EnableRetryOnFailure())
+            .UseSqlServer(cs.ConnectionString)
             .Options;
         await using var setup = Context(options);
         try
