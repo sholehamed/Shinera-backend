@@ -147,6 +147,44 @@ public sealed class PlatformMasterGrantBackfillSqlServerTests
         });
     }
 
+    [Fact]
+    public async Task Rollback_rejects_a_matching_row_without_prior_committed_grant_audit()
+    {
+        await WithDatabaseAsync(async (db, databaseName) =>
+        {
+            var (role, actor, reviewer, permissions) = await SeedAsync(db);
+            var manuallyInserted = new RolePermission(
+                DefaultSeedData.MasterTenant.Id, role.Id, permissions[0].Id)
+            {
+                CreatedBy = actor.Id
+            };
+            db.RolePermissions.Add(manuallyInserted);
+            await db.SaveChangesAsync();
+
+            // The row ID, permission and CreatedBy all match the claimed
+            // manifest. Without matching committed grant-audit evidence,
+            // deleting it would silently revoke an unrelated manual grant.
+            var claimed = new PlatformMasterGrantBackfill.Manifest(
+                DefaultSeedData.MasterTenant.Id, role.Id, actor.Id, reviewer.Id,
+                databaseName, [],
+                [new PlatformMasterGrantBackfill.Grant(
+                    manuallyInserted.Id, manuallyInserted.PermissionId)]);
+
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => PlatformMasterGrantBackfill.RollbackAsync(db, claimed));
+            Assert.Contains("grant audit is missing", error.Message,
+                StringComparison.OrdinalIgnoreCase);
+            Assert.True(await db.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .AnyAsync(x => x.Id == manuallyInserted.Id));
+
+            var audits = await db.Database.SqlQueryRaw<long>(
+                "SELECT COUNT_BIG(*) AS [Value] FROM [dbo].[PlatformGrantAuditEntries] " +
+                "WHERE [Kind]='RolePermission' AND [TargetId]={0} AND [RelatedId]={1}",
+                role.Id, permissions[0].Id).SingleAsync();
+            Assert.Equal(0, audits);
+        });
+    }
+
     private static async Task<(Role role, User actor, User reviewer, List<Permission> permissions)>
         SeedAsync(IdentityDbContext db)
     {
