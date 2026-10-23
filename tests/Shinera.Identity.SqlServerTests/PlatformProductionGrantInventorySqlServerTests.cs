@@ -107,6 +107,75 @@ public sealed class PlatformProductionGrantInventorySqlServerTests
         });
     }
 
+    [Fact]
+    public async Task Inventory_blocks_all_cross_scope_master_grant_relationships()
+    {
+        await WithDatabaseAsync(async db =>
+        {
+            var master = DefaultSeedData.MasterTenant.Id;
+            var foreign = new Tenant(null, "Foreign", "master-edge-foreign", "localhost");
+            db.Tenants.AddRange(new Tenant(master, null, "Master",
+                "master-edge-storage", "localhost"), foreign);
+            await db.SaveChangesAsync();
+
+            var validSystemUser = NewUser(null, "master-edge-system", UserType.System);
+            var tenantUser = NewUser(foreign.Id, "master-edge-tenant", UserType.Tenant);
+            var masterRole = new Role(master, "superadmin", "Master role");
+            var foreignRole = new Role(foreign.Id, "foreign-operator", "Foreign role");
+            var foreignGroup = new Group(Guid.NewGuid())
+            {
+                TenantId = foreign.Id,
+                Name = "Foreign team",
+                NormalizedName = "FOREIGN TEAM"
+            };
+            db.AddRange(validSystemUser, tenantUser, masterRole, foreignRole,
+                foreignGroup, new UserRole(master, validSystemUser.Id, masterRole.Id));
+            await db.SaveChangesAsync();
+
+            await PlatformPermissionCatalogSeeder.SeedDefinitionsAsync(db);
+            var code = PlatformPermissionCatalog.Codes[0];
+            var permission = await db.Permissions.SingleAsync(x => x.Code == code);
+            var ids = await db.Permissions.Where(x =>
+                PlatformPermissionCatalog.Codes.Contains(x.Code))
+                .Select(x => x.Id).ToListAsync();
+
+            // SQL foreign keys permit these relations; the TenantId of the
+            // relationship itself does not constrain referenced row tenancy.
+            db.RolePermissions.Add(new RolePermission(master, foreignRole.Id, permission.Id));
+            db.GroupRoles.Add(new GroupRole
+            {
+                TenantId = master, GroupId = foreignGroup.Id, RoleId = masterRole.Id
+            });
+            db.UserGroups.Add(new UserGroup
+            {
+                TenantId = master, GroupId = foreignGroup.Id, UserId = validSystemUser.Id
+            });
+            db.UserPermissions.Add(new UserPermission
+            {
+                TenantId = master, UserId = tenantUser.Id,
+                PermissionId = permission.Id, IsGranted = true
+            });
+            foreach (var id in ids)
+                db.RolePermissions.Add(new RolePermission(master, masterRole.Id, id));
+            await db.SaveChangesAsync();
+
+            var report = await PlatformProductionGrantInventory.ReadAsync(db);
+            Assert.True(report.HasBlockingFindings);
+            Assert.Equal(1, report.InvalidMasterRolePermissionAssignments);
+            Assert.Equal(1, report.InvalidMasterGroupRoleAssignments);
+            Assert.Equal(1, report.InvalidMasterUserGroupAssignments);
+            Assert.Equal(1, report.InvalidMasterUserPermissionAssignments);
+            Assert.Empty(report.MissingSuperAdminGrantCodes);
+
+            // Inventory must never fix or silently mutate the offending rows.
+            var again = await PlatformProductionGrantInventory.ReadAsync(db);
+            Assert.Equal(report.InvalidMasterRolePermissionAssignments,
+                again.InvalidMasterRolePermissionAssignments);
+            Assert.Equal(report.InvalidMasterGroupRoleAssignments,
+                again.InvalidMasterGroupRoleAssignments);
+        });
+    }
+
     private static User NewUser(Guid? tenantId, string name, UserType type)
         => new(tenantId, name, name + "@example.test", "Test", "User", type)
         {
