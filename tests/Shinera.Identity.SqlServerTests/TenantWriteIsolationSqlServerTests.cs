@@ -691,6 +691,33 @@ public sealed class TenantWriteIsolationSqlServerTests
             var service = new PlatformUserRoleWriteService(guarded, gateway, trusted,
                 NullLogger<PlatformUserRoleWriteService>.Instance);
 
+            // Indefinite lockout is not a valid target for a new grant.
+            systemUser.IsLockedOut = true;
+            systemUser.LockoutEndUtc = null;
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
+            systemUser.IsLockedOut = false;
+            await setup.SaveChangesAsync();
+
+            // Unrelated tracked role-grants cannot piggyback on the allowed
+            // UserRole mutation or be committed as part of the same SaveChanges.
+            var group = new Group
+            {
+                TenantId = masterId, Name = "Reviewers", NormalizedName = "REVIEWERS"
+            };
+            setup.Groups.Add(group);
+            await setup.SaveChangesAsync();
+            guarded.GroupRoles.Add(new GroupRole
+            {
+                TenantId = masterId, GroupId = group.Id, RoleId = operatorRole.Id
+            });
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
+            guarded.ChangeTracker.Clear();
+            Assert.Empty(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.UserId == systemUser.Id).ToListAsync());
+
             Assert.True(await service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
             Assert.False(await service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
             Assert.Single(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
