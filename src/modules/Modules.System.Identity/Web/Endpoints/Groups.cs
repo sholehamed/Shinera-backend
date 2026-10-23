@@ -3,6 +3,7 @@ using Groups.System.Identity.Application.Features.Groups.Queries;
 using Modules.System.Identity.Application.Features.Groups.Commands;
 using Modules.System.Identity.Infrastructure.Persistence;
 using Modules.System.Identity.Web.Util;
+using Microsoft.Extensions.Logging;
 using Modules.System.Identity.Application.Features.Groups.Queries;
 using Modules.System.Identity.Application.Features.Users.Queries;
 
