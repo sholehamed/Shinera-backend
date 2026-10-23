@@ -178,7 +178,7 @@ public sealed class TenantWriteIsolationSqlServerTests
             var writer = new PlatformRoleWriteExecutor(
                 new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
                     NullLogger<AuthorizedPlatformMasterWrite>.Instance),
-                NullLogger<PlatformRoleWriteExecutor>.Instance);
+                guarded, NullLogger<PlatformRoleWriteExecutor>.Instance);
 
             var id = await writer.ExecuteAsync(principal, "roles.create", async () =>
             {
@@ -195,6 +195,30 @@ public sealed class TenantWriteIsolationSqlServerTests
             // Trusted reads are not a privilege to mutate another tenant.
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
                 principal, "roles.update", () => Task.CompletedTask, foreignRole.Id));
+
+            // A generic administrator Role CRUD endpoint may not forge the
+            // name that is used for the live platform authorization decision.
+            var mutationRan = false;
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "roles.create", () =>
+                {
+                    mutationRan = true;
+                    return Task.CompletedTask;
+                }, newRoleName: " superADMIN "));
+            Assert.False(mutationRan);
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "roles.update", () => Task.CompletedTask,
+                id, newRoleName: "SUPERADMIN"));
+
+            // Deleting, deactivating or replacing the grants of the existing
+            // SuperAdmin role is a reviewed migration, not ordinary CRUD.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "roles.delete", () => Task.CompletedTask, superAdmin.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "roles.permissions.replace", () => Task.CompletedTask, superAdmin.Id));
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(scope));
 
             // Revoked role membership invalidates a previously issued access token.
             setup.UserRoles.Remove(membership);
@@ -239,7 +263,7 @@ public sealed class TenantWriteIsolationSqlServerTests
             var writer = new PlatformRoleWriteExecutor(
                 new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
                     NullLogger<AuthorizedPlatformMasterWrite>.Instance),
-                NullLogger<PlatformRoleWriteExecutor>.Instance);
+                guarded, NullLogger<PlatformRoleWriteExecutor>.Instance);
 
             var command = new UpdateRolePermissionsCommand
             {
