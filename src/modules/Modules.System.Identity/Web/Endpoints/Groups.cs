@@ -1,6 +1,8 @@
 ﻿using Groups.System.Identity.Application.Features.Groups.Commands;
 using Groups.System.Identity.Application.Features.Groups.Queries;
 using Modules.System.Identity.Application.Features.Groups.Commands;
+using Modules.System.Identity.Infrastructure.Persistence;
+using Modules.System.Identity.Web.Util;
 using Modules.System.Identity.Application.Features.Groups.Queries;
 using Modules.System.Identity.Application.Features.Users.Queries;
 
@@ -24,11 +26,21 @@ namespace Groups.System.Identity.Web.Endpoints
                 .MapPost(AddGroupMembers, "{GroupId}/addmembers")
             ;
         }
-        public async Task<NoContent> AddGroupMembers(IDispatcher sender,Guid GroupId, AddGroupMembersCommand parameter, CancellationToken cancellationToken)
+        public async Task<Results<NoContent, ForbidHttpResult>> AddGroupMembers(
+            IDispatcher sender, PlatformGroupMembershipWriteExecutor write,
+            HttpContext http, Guid GroupId, AddGroupMembersCommand parameter,
+            CancellationToken cancellationToken)
         {
-            parameter.GroupId = GroupId; 
-            await sender.Send(parameter, cancellationToken);
-            return TypedResults.NoContent();
+            parameter.GroupId = GroupId;
+            parameter.StorageTenantId = DefaultSeedData.MasterTenant.Id;
+            try
+            {
+                await write.ExecuteAsync(http.User, GroupId, parameter.UserIds,
+                    async () => await sender.Send(parameter, cancellationToken),
+                    cancellationToken);
+                return TypedResults.NoContent();
+            }
+            catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
         }
         public async Task<Results<Ok<PagedList<GroupMemberPagedListDto>>, NotFound>> GroupMembers(IDispatcher sender, Guid groupId, GroupMembersPagedListQuery parameter, CancellationToken cancellationToken)
         {
