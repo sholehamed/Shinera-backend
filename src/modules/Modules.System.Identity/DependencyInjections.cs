@@ -33,6 +33,7 @@ namespace Modules.System.Identity
             services.AddScoped<AuthorizedPlatformMasterWrite>();
             services.AddScoped<PlatformRoleWriteExecutor>();
             services.AddScoped<PlatformGroupMembershipWriteExecutor>();
+            services.AddScoped<PlatformGroupMembershipRemovalService>();
             services.AddScoped<PlatformUserRoleWriteService>();
             services.AddScoped<PlatformUserPermissionWriteService>();
             services.AddScoped<PlatformGroupRoleWriteService>();

@@ -24,6 +24,7 @@ namespace Groups.System.Identity.Web.Endpoints
                 .MapDelete(GroupDelete, "{id}")
                 .MapPatch(GroupChangeState, "{id}")
                 .MapPost(AddGroupMembers, "{GroupId}/addmembers")
+                .MapDelete(RemoveGroupMember, "{groupId:guid}/members/{userId:guid}")
                 .MapPut(GrantGroupRole, "{groupId:guid}/roles/{roleId:guid}")
                 .MapDelete(RevokeGroupRole, "{groupId:guid}/roles/{roleId:guid}")
             ;
@@ -51,6 +52,21 @@ namespace Groups.System.Identity.Web.Endpoints
             {
                 await grants.ChangeAsync(http.User, groupId, roleId,
                     assign: false, cancellationToken: cancellationToken);
+                return TypedResults.NoContent();
+            }
+            catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+        }
+
+        // Scoped URI-only revoke: groupId and userId are validated against
+        // Master storage inside a live, Serializable write transaction.
+        public async Task<Results<NoContent, ForbidHttpResult>> RemoveGroupMember(
+            PlatformGroupMembershipRemovalService removal,
+            HttpContext http, Guid groupId, Guid userId,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await removal.RevokeAsync(http.User, groupId, userId, cancellationToken);
                 return TypedResults.NoContent();
             }
             catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }

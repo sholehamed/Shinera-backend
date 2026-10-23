@@ -647,8 +647,83 @@ public sealed class TenantWriteIsolationSqlServerTests
             Assert.False(tenant.IsFilterDisabled);
             Assert.False(trusted.AllowsPlatformTenant(masterId));
 
+            // Removal is a distinct, pair-bound System operation. Idempotent
+            // deletes emit no extra change event, and the actor is persisted.
+            var remover = new PlatformGroupMembershipRemovalService(
+                guard,
+                new AuthorizedPlatformMasterWrite(guard, tenant, trusted,
+                    NullLogger<AuthorizedPlatformMasterWrite>.Instance),
+                trusted, NullLogger<PlatformGroupMembershipRemovalService>.Instance);
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                remover.RevokeAsync(principal, ordinaryGroup.Id, actor.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                remover.RevokeAsync(principal, foreignGroup.Id, member.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                remover.RevokeAsync(principal, privilegedGroup.Id, member.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                remover.RevokeAsync(principal, ordinaryGroup.Id, tenantUser.Id));
+            Assert.Equal(2, await CountAuditEventsAsync(guard, "UserGroup"));
+
+            // Fail an audit INSERT after an actual delete; the membership must
+            // survive since the change and history share one transaction.
+            await setup.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER [dbo].[TR_PlatformGrantAuditEntries_TestFailRevoke]
+                ON [dbo].[PlatformGrantAuditEntries]
+                AFTER INSERT AS
+                BEGIN
+                    THROW 51005, 'Injected member revoke audit failure', 1;
+                END
+                """);
+            try
+            {
+                await Assert.ThrowsAsync<SqlException>(() =>
+                    remover.RevokeAsync(principal, ordinaryGroup.Id, anotherMember.Id));
+            }
+            finally
+            {
+                await setup.Database.ExecuteSqlRawAsync(
+                    "DROP TRIGGER IF EXISTS [dbo].[TR_PlatformGrantAuditEntries_TestFailRevoke]");
+                guard.ChangeTracker.Clear();
+            }
+            Assert.True(await guard.UserGroups.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().AnyAsync(x => x.GroupId == ordinaryGroup.Id &&
+                    x.UserId == anotherMember.Id));
+            Assert.Equal(2, await CountAuditEventsAsync(guard, "UserGroup"));
+
+            // A previously tracked, unrelated same-group delete must be
+            // rejected by the stricter GroupId/UserId grant intent.
+            var differentLink = await guard.UserGroups.IgnoreQueryFilters(["tenant"])
+                .SingleAsync(x => x.GroupId == ordinaryGroup.Id && x.UserId == member.Id);
+            guard.UserGroups.Remove(differentLink);
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                remover.RevokeAsync(principal, ordinaryGroup.Id, anotherMember.Id));
+            guard.ChangeTracker.Clear();
+            Assert.Equal(2, await guard.UserGroups.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().CountAsync(x => x.GroupId == ordinaryGroup.Id));
+            Assert.Equal(2, await CountAuditEventsAsync(guard, "UserGroup"));
+
+            Assert.True(await remover.RevokeAsync(
+                principal, ordinaryGroup.Id, anotherMember.Id));
+            Assert.False(await remover.RevokeAsync(
+                principal, ordinaryGroup.Id, anotherMember.Id));
+            Assert.False(await guard.UserGroups.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().AnyAsync(x => x.GroupId == ordinaryGroup.Id &&
+                    x.UserId == anotherMember.Id));
+            Assert.Equal(3, await CountAuditEventsAsync(guard, "UserGroup"));
+            Assert.Equal(actor.Id, await AuditActorAsync(guard, "UserGroup"));
+
+            // Cleanup is permitted for a now-inactive System member.
+            member.IsActive = false;
+            await setup.SaveChangesAsync();
+            Assert.True(await remover.RevokeAsync(
+                principal, ordinaryGroup.Id, member.Id));
+            Assert.Equal(4, await CountAuditEventsAsync(guard, "UserGroup"));
+
             setup.UserRoles.Remove(adminMembership);
             await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                remover.RevokeAsync(principal, ordinaryGroup.Id, member.Id));
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
                 AddMember(ordinaryGroup.Id, actor.Id));
             Assert.False(trusted.AllowsPlatformTenant(masterId));
