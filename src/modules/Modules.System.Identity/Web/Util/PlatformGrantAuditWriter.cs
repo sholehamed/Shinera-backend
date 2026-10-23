@@ -24,7 +24,7 @@ internal static class PlatformGrantAuditWriter
 
         if (actorUserId == Guid.Empty || targetId == Guid.Empty ||
             relatedId == Guid.Empty ||
-            kind is not ("UserRole" or "GroupRole" or "UserPermission") ||
+            kind is not ("UserRole" or "GroupRole" or "UserPermission" or "UserGroup" or "RolePermission") ||
             action is not ("grant" or "revoke" or "allow" or "deny" or "clear"))
             throw new InvalidOperationException("Invalid platform grant audit payload.");
 
