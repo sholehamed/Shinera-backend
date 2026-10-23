@@ -22,9 +22,16 @@ namespace Modules.System.Identity.Application.Features.Roles.Queries
         {
             var u = auth.UserId;
 
-            var res = await context.UserRoles.AsNoTracking()
-                .Where(x=>x.UserId==auth.UserId)
-                .Select(x=>x.Role).ProjectToListAsync<RoleLookupDto>(mapper.ConfigurationProvider);
+            // System administrators are intentionally null-Tenant users.
+            // Their Role definitions/assignments are stored under fixed
+            // Master Tenant. A tenant query filter would return an empty
+            // lookup, even after successful login.
+            var master = Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id;
+            var res = await context.UserRoles.IgnoreQueryFilters(["tenant"]).AsNoTracking()
+                .Where(x => x.UserId == auth.UserId && x.TenantId == master &&
+                            x.Role.TenantId == master)
+                .Select(x => x.Role)
+                .ProjectToListAsync<RoleLookupDto>(mapper.ConfigurationProvider);
             return res;
         }
     }
