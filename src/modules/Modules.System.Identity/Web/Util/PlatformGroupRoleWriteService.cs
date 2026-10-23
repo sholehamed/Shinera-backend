@@ -115,6 +115,11 @@ public sealed class PlatformGroupRoleWriteService(
                 // The interceptor rejects unrelated GroupRole, UserRole,
                 // UserPermission, UserGroup or RolePermission changes.
                 await database.SaveChangesAsync(cancellationToken);
+                await PlatformGrantAuditWriter.RecordAsync(database, actorId,
+                    "GroupRole", groupId, roleId,
+                    assign ? "grant" : "revoke",
+                    previousGrant: !assign, currentGrant: assign,
+                    cancellationToken: cancellationToken);
             }
 
             await transaction.CommitAsync(cancellationToken);
