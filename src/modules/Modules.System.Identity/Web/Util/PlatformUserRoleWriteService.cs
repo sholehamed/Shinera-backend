@@ -48,7 +48,8 @@ public sealed class PlatformUserRoleWriteService(
                     x.UserTpe == UserType.System && x.TenantId == null, cancellationToken);
             if (user is null ||
                 (assign && (!user.IsActive ||
-                            (user.IsLockedOut && user.LockoutEndUtc > DateTime.UtcNow))))
+                            (user.IsLockedOut &&
+                             (user.LockoutEndUtc is null || user.LockoutEndUtc > DateTime.UtcNow)))))
                 throw new UnauthorizedAccessException("Target is not an eligible System user.");
 
             var role = await database.Roles.AsNoTracking()
