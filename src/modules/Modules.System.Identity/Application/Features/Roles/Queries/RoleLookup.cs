@@ -26,7 +26,7 @@ namespace Modules.System.Identity.Application.Features.Roles.Queries
             // Their Role definitions/assignments are stored under fixed
             // Master Tenant. A tenant query filter would return an empty
             // lookup, even after successful login.
-            var master = Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id;
+            var master = global::Modules.System.Identity.Infrastructure.Persistence.DefaultSeedData.MasterTenant.Id;
             var res = await context.UserRoles.IgnoreQueryFilters(["tenant"]).AsNoTracking()
                 .Where(x => x.UserId == auth.UserId && x.TenantId == master &&
                             x.Role.TenantId == master)
