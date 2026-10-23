@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+using Microsoft.AspNetCore.Builder;
 using Modules.System.Identity.Web.Util;
 using Modules.System.Identity.Infrastructure.Persistence;
 ﻿using Microsoft.AspNetCore.Routing;
@@ -13,16 +15,42 @@ public class Roles : EndpointGroupBase
 {
     public override void Map(WebApplication app)
     {
+        // Keep coarse, live SystemAdministrator enforcement for every endpoint.
+        // Opt-in granular checks only after a reviewed Master-scope grant migration.
+        // Production defaults OFF to preserve existing administrators.
+        var granular = app.Configuration.GetValue<bool>(
+            "Identity:PlatformPermissions:EnforceRoleEndpoints");
+        Action<RouteHandlerBuilder> requireCreate = endpoint =>
+        {
+            if (granular) endpoint.RequireSystemPermission("roles", "create");
+        };
+        Action<RouteHandlerBuilder> requireUpdate = endpoint =>
+        {
+            if (granular) endpoint.RequireSystemPermission("roles", "update");
+        };
+        Action<RouteHandlerBuilder> requireDelete = endpoint =>
+        {
+            if (granular) endpoint.RequireSystemPermission("roles", "delete");
+        };
+        Action<RouteHandlerBuilder> requireState = endpoint =>
+        {
+            if (granular) endpoint.RequireSystemPermission("roles", "change-state");
+        };
+        Action<RouteHandlerBuilder> requireAssignments = endpoint =>
+        {
+            if (granular) endpoint.RequireSystemPermission("roles", "assign-permissions");
+        };
+
         app.MapGroup(this).RequireAuthorization("SystemAdministrator")
              .MapPost(RolePagedList, "pagedList")
                 .MapGet(RoleGetById, "{id}")
             .MapGet(RolesLookup, "lookup", configure: x => x.RequireAuthorization())
             .MapGet(RolePermissionsTree, "{roleId}/permissions/tree", configure: x => x.RequireAuthorization())
-           .MapPost(RoleCreate)
-                .MapPut(RoleUpdate, "{id}")
-                .MapDelete(RoleDelete, "{id}")
-                .MapPatch(RoleChangeState, "{id}")
-                .MapPut(UpdateRolePermissions, "{roleId:guid}/permissions")
+           .MapPost(RoleCreate, configure: requireCreate)
+                .MapPut(RoleUpdate, "{id}", configure: requireUpdate)
+                .MapDelete(RoleDelete, "{id}", configure: requireDelete)
+                .MapPatch(RoleChangeState, "{id}", configure: requireState)
+                .MapPut(UpdateRolePermissions, "{roleId:guid}/permissions", configure: requireAssignments)
         ;
     }
     public async Task<Results<NoContent, NotFound, BadRequest, ForbidHttpResult>> UpdateRolePermissions(IDispatcher sender, PlatformRoleWriteExecutor write, HttpContext http, Guid roleId, UpdateRolePermissionsCommand command)
