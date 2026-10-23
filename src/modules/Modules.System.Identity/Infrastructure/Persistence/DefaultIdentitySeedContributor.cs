@@ -67,6 +67,21 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
                     db.Permissions.Add(new Permission(permissionId,
                         "e2e.http-access", null, "E2E HTTP access", null));
                 }
+                // Explicit E2E-only Resource fixture for validating real Permission
+                // Create/Update FK behavior. No global/prod resource seed changes.
+                var e2eModuleId = Guid.Parse("bc3fd038-e283-46a0-92d3-0eb916c54491");
+                var e2eResourceId = Guid.Parse("d051bd62-6828-421c-a0bf-70ca4ed29ae3");
+                if (!await db.Modules.AnyAsync(m => m.Id == e2eModuleId))
+                {
+                    db.Modules.Add(new Module(e2eModuleId,
+                        "e2e-http-permissions", "E2E Permission Module", null, 0, true));
+                }
+                await db.SaveChangesAsync();
+                if (!await db.Resources.AnyAsync(r => r.Id == e2eResourceId))
+                {
+                    db.Resources.Add(new Resource(e2eResourceId, e2eModuleId,
+                        "e2e-http-permissions", "E2E Permission Resource", null, 0, true));
+                }
                 await db.SaveChangesAsync();
             }
         }

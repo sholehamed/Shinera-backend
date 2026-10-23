@@ -1,5 +1,4 @@
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.Extensions.Configuration;
 using Modules.System.Identity.Application.Features.Permissions.Commands;
 using Modules.System.Identity.Application.Features.Permissions.Queries;
@@ -46,8 +45,11 @@ namespace Modules.System.Identity.Web.Endpoints
             IDispatcher sender, string? text, CancellationToken ct)
             => TypedResults.Ok(await sender.Query(new PermissionLookupQuery(text), ct));
 
-        public async Task<Results<NoContent, ForbidHttpResult>> PermissionChangeState(
-            IDispatcher sender, PlatformPermissionWriteExecutor write, HttpContext http, Guid id)
+        // Use explicit HTTP contracts for expected request failures. Do not
+        // swallow unexpected exceptions or turn missing resources into 500s.
+        public async Task<IResult> PermissionChangeState(
+            IDispatcher sender, PlatformPermissionWriteExecutor write,
+            HttpContext http, Guid id)
         {
             try
             {
@@ -57,10 +59,12 @@ namespace Modules.System.Identity.Web.Endpoints
                 return TypedResults.NoContent();
             }
             catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+            catch (PlatformPermissionRequestException exception) { return KnownFailure(exception); }
         }
 
-        public async Task<Results<NoContent, ForbidHttpResult>> PermissionDelete(
-            IDispatcher sender, PlatformPermissionWriteExecutor write, HttpContext http, Guid id)
+        public async Task<IResult> PermissionDelete(
+            IDispatcher sender, PlatformPermissionWriteExecutor write,
+            HttpContext http, Guid id)
         {
             try
             {
@@ -70,6 +74,7 @@ namespace Modules.System.Identity.Web.Endpoints
                 return TypedResults.NoContent();
             }
             catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+            catch (PlatformPermissionRequestException exception) { return KnownFailure(exception); }
         }
 
         public async Task<Results<Ok<PagedList<PermissionPagedListDto>>, BadRequest>>
@@ -80,39 +85,68 @@ namespace Modules.System.Identity.Web.Endpoints
             return TypedResults.Ok(await sender.Query(parameter, cancellationToken));
         }
 
-        public async Task<Results<Ok<PermissionGetByIdDto>, NotFound>> PermissionGetById(
-            [FromServices] IDispatcher sender, Guid id, CancellationToken cancellationToken = default)
-            => TypedResults.Ok(await sender.Query(new PermissionGetByIdQuery(id), cancellationToken));
+        public async Task<IResult> PermissionGetById(
+            [FromServices] IDispatcher sender, Guid id,
+            CancellationToken cancellationToken = default)
+        {
+            if (id == Guid.Empty)
+                return TypedResults.BadRequest();
+            try
+            {
+                return TypedResults.Ok(await sender.Query(
+                    new PermissionGetByIdQuery(id), cancellationToken));
+            }
+            catch (KeyNotFoundException) { return TypedResults.NotFound(); }
+        }
 
-        public async Task<Results<Created<Guid>, BadRequest, ForbidHttpResult>> PermissionCreate(
+        public async Task<IResult> PermissionCreate(
             IDispatcher sender, PlatformPermissionWriteExecutor write, HttpContext http,
             PermissionCreateCommand parameter, CancellationToken cancellationToken = default)
         {
+            parameter.Code = parameter.Code?.Trim().ToUpperInvariant()!;
             try
             {
                 var id = await write.ExecuteAsync(http.User, "permissions.create",
                     async () => await sender.Send(parameter, cancellationToken),
-                    newCode: parameter.Code, cancellationToken: cancellationToken);
+                    newCode: parameter.Code, cancellationToken: cancellationToken,
+                    newName: parameter.Name, resourceId: parameter.ResourceId,
+                    links: parameter.PermissionResources);
                 return TypedResults.Created(id.ToString(), id);
             }
             catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+            catch (PlatformPermissionRequestException exception) { return KnownFailure(exception); }
         }
 
-        public async Task<Results<NoContent, ForbidHttpResult>> PermissionUpdate(
+        public async Task<IResult> PermissionUpdate(
             [FromServices] IDispatcher sender, PlatformPermissionWriteExecutor write,
             HttpContext http, [FromRoute] Guid id, PermissionUpdateCommand parameter,
             CancellationToken cancellationToken = default)
         {
             parameter.Id = id;
+            parameter.Code = parameter.Code?.Trim().ToUpperInvariant()!;
             try
             {
                 await write.ExecuteAsync(http.User, "permissions.update",
                     async () => await sender.Send(parameter, cancellationToken),
                     newCode: parameter.Code, permissionId: id,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken, newName: parameter.Name,
+                    resourceId: parameter.ResourceId, links: parameter.PermissionResources);
                 return TypedResults.NoContent();
             }
             catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+            catch (PlatformPermissionRequestException exception) { return KnownFailure(exception); }
         }
+
+        private static IResult KnownFailure(PlatformPermissionRequestException error)
+            => TypedResults.Problem(
+                statusCode: error.StatusCode,
+                title: error.StatusCode switch
+                {
+                    StatusCodes.Status400BadRequest => "Invalid permission request",
+                    StatusCodes.Status404NotFound => "Permission not found",
+                    StatusCodes.Status409Conflict => "Permission conflict",
+                    _ => "Permission operation rejected"
+                },
+                detail: error.Message);
     }
 }
