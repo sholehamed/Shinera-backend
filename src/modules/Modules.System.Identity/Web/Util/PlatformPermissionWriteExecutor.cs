@@ -53,7 +53,14 @@ public sealed class PlatformPermissionWriteExecutor(
                     "Reserved platform permission definitions cannot be mutated.");
         }
 
-        if (newCode is not null || operation is "permissions.create" or "permissions.update")
+        // Reserved code checks apply to ALL callers, including existing internal
+        // service use without an HTTP DTO. Shape validation only applies when
+        // an HTTP request passes its name/resource/link payload to this gateway.
+        if (PlatformPermissionCatalog.IsReservedCode(newCode))
+            throw new UnauthorizedAccessException(
+                "Reserved platform permission codes are deployment managed.");
+
+        if (newName is not null || resourceId.HasValue || links is not null)
         {
             var code = newCode?.Trim().ToUpperInvariant();
             if (string.IsNullOrWhiteSpace(code) || code.Length > 100 ||
