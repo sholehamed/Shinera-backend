@@ -2,6 +2,7 @@
 using Infrastructure.SharedKernel;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -50,6 +51,11 @@ namespace Modules.System.Identity
             services.AddScoped<CaptchaService>();
             services.AddScoped<RefreshGrantValidator>();
             services.AddScoped<IAuthorizationHandler, ActiveSystemAdministratorHandler>();
+            // Persist failed privileged HTTP authorization decisions independently
+            // from the grant mutation transaction; other policies use default behavior.
+            services.AddScoped<PlatformAccessDenialAudit>();
+            services.AddScoped<IAuthorizationMiddlewareResultHandler,
+                AuditedPlatformAuthorizationResultHandler>();
             services.AddScoped<IAuthorizationHandler, TenantPermissionHandler>();
             services.AddScoped<IAuthorizationHandler, SystemPermissionHandler>();
             services.AddScoped<IIdentityDbContext>(provider =>
