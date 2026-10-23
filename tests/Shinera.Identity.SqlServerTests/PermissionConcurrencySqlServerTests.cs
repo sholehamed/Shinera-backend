@@ -2,6 +2,7 @@ using System.Data;
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Modules.System.Identity.Domain.Entities;
+using Modules.System.Identity.Infrastructure.Persistence;
 using Modules.System.Identity.Infrastructure.Persistence.Contexts;
 using Xunit;
 
@@ -202,6 +203,56 @@ public sealed class PermissionConcurrencySqlServerTests
             await db.SaveChangesAsync();
             await db.Database.MigrateAsync();
             Assert.True(await db.Permissions.AnyAsync(p => p.Id == one.Id));
+        }, targetMigration: "20261023210000_platformaccessdenialaudit");
+    }
+
+    [Fact]
+    public async Task Production_startup_defers_unique_migration_until_explicit_opt_in()
+    {
+        await WithDatabaseAsync(async (_, options) =>
+        {
+            await using var db = Context(options);
+            var one = new Permission { Code = "E2E.PROD-DUP", Name = "Legacy first" };
+            var two = new Permission { Code = " e2e.prod-dup ", Name = "Legacy second" };
+            db.Permissions.AddRange(one, two);
+            await db.SaveChangesAsync();
+
+            // Prior production startup automatically migrated everything;
+            // that would now prevent API startup for historical duplicates.
+            await DbSeeder.MigrateForStartupAsync(
+                db, isProduction: true, allowCodeUniquenessMigration: false);
+
+            var applied = await db.Database.GetAppliedMigrationsAsync();
+            Assert.DoesNotContain("20261024200000_permissioncodeuniqueness", applied);
+            Assert.True(await db.Permissions.AnyAsync(p => p.Id == one.Id));
+            Assert.True(await db.Permissions.AnyAsync(p => p.Id == two.Id));
+
+            // Explicit reviewed rollout fails closed on dirty data, and the
+            // attempted DDL does not change the existing Permission IDs.
+            var error = await Assert.ThrowsAnyAsync<Exception>(() =>
+                DbSeeder.MigrateForStartupAsync(
+                    db, isProduction: true, allowCodeUniquenessMigration: true));
+            Assert.Contains("normalized duplicate codes", error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            db.Permissions.Remove(two);
+            await db.SaveChangesAsync();
+            await DbSeeder.MigrateForStartupAsync(
+                db, isProduction: true, allowCodeUniquenessMigration: true);
+
+            Assert.Contains("20261024200000_permissioncodeuniqueness",
+                await db.Database.GetAppliedMigrationsAsync());
+
+            // Turning the flag back off after a successful rollout must NOT
+            // downgrade/drop an already installed uniqueness constraint.
+            await DbSeeder.MigrateForStartupAsync(
+                db, isProduction: true, allowCodeUniquenessMigration: false);
+            var conflict = new Permission { Code = "e2e.prod-dup", Name = "Duplicate" };
+            db.Permissions.Add(conflict);
+            var duplicateError = await Assert.ThrowsAsync<DbUpdateException>(
+                () => db.SaveChangesAsync());
+            Assert.True(duplicateError.InnerException
+                is SqlException { Number: 2601 or 2627 });
         }, targetMigration: "20261023210000_platformaccessdenialaudit");
     }
 
