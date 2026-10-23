@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Modules.System.Identity.Application.Abstractions;
+using Modules.System.Identity.Domain.Entities;
 
 namespace Modules.System.Identity.Infrastructure.Persistence.Interceptors;
 
@@ -7,11 +8,50 @@ namespace Modules.System.Identity.Infrastructure.Persistence.Interceptors;
 /// Infrastructure-owned write overrides. Query-filter bypass is intentionally NOT
 /// a write bypass. Only trusted infrastructure code can open these scopes.
 /// </summary>
+internal enum PlatformGrantMutationKind { RolePermissions, GroupMembers }
+
 public sealed class TrustedTenantWriteScope(ILogger<TrustedTenantWriteScope> logger)
 {
     private int _bootstrapDepth;
     private Guid? _platformTenant;
     private Guid? _platformActor;
+
+    private PlatformGrantIntent? _grantIntent;
+
+    private sealed record PlatformGrantIntent(PlatformGrantMutationKind Kind, Guid TargetId);
+
+    // The master write gateway does not authorize arbitrary privileged grant
+    // changes. Only the named, independently-validated operation can open this
+    // more restrictive inner scope, and only for its designated target.
+    internal IDisposable BeginPlatformGrantMutation(PlatformGrantMutationKind kind, Guid targetId)
+    {
+        if (_platformActor is null ||
+            _platformTenant != DefaultSeedData.MasterTenant.Id ||
+            targetId == Guid.Empty || _grantIntent is not null)
+            throw new UnauthorizedAccessException("A verified, non-nested platform grant operation is required.");
+
+        _grantIntent = new PlatformGrantIntent(kind, targetId);
+        logger.LogWarning("Scoped platform grant write opened for {Kind} {TargetId}", kind, targetId);
+        return new GuardedScope(() =>
+        {
+            _grantIntent = null;
+            logger.LogWarning("Scoped platform grant write closed for {Kind} {TargetId}", kind, targetId);
+        });
+    }
+
+    internal bool AllowsPlatformGrantMutation(object entity) => entity switch
+    {
+        // Always protected from generic master writes. These assignments
+        // need separate audited, target-validated grant APIs.
+        UserRole or GroupRole or UserPermission => false,
+        RolePermission rp => _grantIntent is
+            { Kind: PlatformGrantMutationKind.RolePermissions } intent &&
+            rp.RoleId == intent.TargetId,
+        UserGroup member => _grantIntent is
+            { Kind: PlatformGrantMutationKind.GroupMembers } intent &&
+            member.GroupId == intent.TargetId,
+        _ => true
+    };
 
     internal bool IsBootstrap => _bootstrapDepth > 0;
     internal bool AllowsPlatformTenant(Guid tenantId) =>
@@ -49,6 +89,7 @@ public sealed class TrustedTenantWriteScope(ILogger<TrustedTenantWriteScope> log
         return new GuardedScope(() =>
         {
             logger.LogWarning("Trusted platform write scope exited for actor {ActorId}", actorUserId);
+            _grantIntent = null;
             _platformActor = null;
             _platformTenant = null;
         });
