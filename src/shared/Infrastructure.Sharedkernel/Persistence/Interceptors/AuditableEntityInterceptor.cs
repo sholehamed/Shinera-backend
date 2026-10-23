@@ -53,8 +53,15 @@ public class AuditableEntityInterceptor : SaveChangesInterceptor
         {
             if (entry.State == EntityState.Deleted)
             {
-                entry.Entity.Delete(userId, userIp);
+                // Authorization assignment links must be removed physically:
+                // soft-deleted GroupRole rows would continue to inherit
+                // permissions and block re-grant under the unique index.
+                // Their history is recorded by the transactional grant audit.
+                // TenantSaveChangesInterceptor still validates exact write intent.
+                if (entry.Entity is IHardDeleteAssignment)
+                    continue;
 
+                entry.Entity.Delete(userId, userIp);
                 entry.State = EntityState.Modified;
             }
         }
