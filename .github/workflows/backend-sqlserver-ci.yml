@@ -39,9 +39,17 @@ jobs:
       - name: Run SQL Server migrations and authorization regressions
         run: dotnet test tests/Shinera.Identity.SqlServerTests/Shinera.Identity.SqlServerTests.csproj -c Release --no-restore --logger 'trx;LogFileName=identity-sqlserver.trx' --results-directory TestResults
 
+      # This helper is a standalone test executable and never part of the Web API.
+      - name: Build CI-only SQL revocation helper
+        run: dotnet build tests/Shinera.Identity.E2E.SqlMutator/Shinera.Identity.E2E.SqlMutator.csproj -c Release
+
       - name: Real API startup and development admin login smoke
         env:
           ASPNETCORE_ENVIRONMENT: Development
+          # A dedicated disposable database is mandatory for the test-only SQL
+          # privilege revocation command; it refuses all non-E2E DB names.
+          DBNAME: Shinera_E2E_Platform_HTTP
+          SHINERA_E2E_DB_MUTATION: stale-jwt-ci-only
           Identity__AllowInsecureHttpForE2E: 'true'
           Identity__E2E__Enabled: 'true'
           Identity__E2E__CaptchaCode: 'ABCDE'
