@@ -50,6 +50,8 @@ namespace Modules.System.Identity
             services.AddScoped<CaptchaService>();
             services.AddScoped<RefreshGrantValidator>();
             services.AddScoped<IAuthorizationHandler, ActiveSystemAdministratorHandler>();
+            // Scoped append-only writer, independent of the rejected grant transaction.
+            services.AddScoped<PlatformAccessDenialAudit>();
             services.AddScoped<IAuthorizationHandler, TenantPermissionHandler>();
             services.AddScoped<IAuthorizationHandler, SystemPermissionHandler>();
             services.AddScoped<IIdentityDbContext>(provider =>
@@ -132,6 +134,8 @@ namespace Modules.System.Identity
             var assembly = typeof(IdentityDbContext).Assembly;
 
             app.UseAuthentication();
+            // Before authorization, also observes endpoint-level Forbid() responses.
+            app.UseMiddleware<PlatformDeniedAccessAuditMiddleware>();
             app.UseAuthorization();
             DbSeeder.SeedAsync(app.Services).Wait();
             //app.UseMiddleware<PermissionMiddleware>();

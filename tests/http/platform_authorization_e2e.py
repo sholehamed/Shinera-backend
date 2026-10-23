@@ -326,7 +326,21 @@ def run():
     assert json_value(response).get("error") == "invalid_grant", (
         "Stale privileged refresh must fail with invalid_grant")
 
-    print(f"PASS: {PASSED} real HTTP status checks, persisted Role and stale-JWT invariants", flush=True)
+    # Independently inspect committed SQL Server security audit decisions.
+    # This verifies middleware-level 401/403, endpoint-level reserved-catalog
+    # 403, and an already-issued JWT denied after its grant is revoked.
+    try:
+        audit = subprocess.run(
+            ["dotnet", "run", "--project", tool, "-c", "Release", "--no-build",
+             "--", "assert-denied-audit", admin_id, viewer_id],
+            check=True, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise AssertionError("Committed SQL denial audit verification failed") from exc
+    assert "PASS: committed denied-access audit rows and SQL append-only trigger." in audit.stdout, (
+        "CI-only query did not confirm append-only denied-access ledger")
+    print("PASS: durable denied-access audit (anonymous, viewer, reserved and revoked)", flush=True)
+
+    print(f"PASS: {PASSED} real HTTP status checks and persisted authorization/audit invariants", flush=True)
 
 
 if __name__ == "__main__":

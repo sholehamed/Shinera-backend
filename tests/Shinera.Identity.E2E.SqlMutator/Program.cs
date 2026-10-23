@@ -8,8 +8,9 @@ using Modules.System.Identity.Infrastructure.Persistence;
 const string optIn = "stale-jwt-ci-only";
 var databaseName = Environment.GetEnvironmentVariable("DBNAME") ?? "";
 var server = Environment.GetEnvironmentVariable("DataBaseServer") ?? "";
-if (args.Length != 2 ||
-    args[0] != "revoke-seeded-superadmin" ||
+var isRevoke = args.Length == 2 && args[0] == "revoke-seeded-superadmin";
+var isAuditCheck = args.Length == 3 && args[0] == "assert-denied-audit";
+if (!(isRevoke || isAuditCheck) ||
     !Guid.TryParse(args[1], out var subject) ||
     subject == Guid.Empty ||
     Environment.GetEnvironmentVariable("SHINERA_E2E_DB_MUTATION") != optIn ||
@@ -39,6 +40,67 @@ var connectionString = new SqlConnectionStringBuilder
 
 await using var connection = new SqlConnection(connectionString);
 await connection.OpenAsync();
+
+if (isAuditCheck)
+{
+    if (!Guid.TryParse(args[2], out var viewerId) || viewerId == Guid.Empty ||
+        viewerId == subject)
+        throw new InvalidOperationException("Invalid signed System viewer subject.");
+
+    // These checks query committed SQL Server rows, not in-memory loggers,
+    // mocked principals or the same DbContext as the live HTTP request.
+    var checks = new (string Name, string Sql)[]
+    {
+        ("anonymous challenge", """
+            SELECT COUNT_BIG(*) FROM [dbo].[PlatformAccessDenialAuditEntries]
+            WHERE [ActorUserId] IS NULL AND [Outcome] = 'challenge'
+              AND [HttpMethod] = 'GET' AND [RouteTemplate] LIKE '%Permissions%'
+            """),
+        ("System viewer forbidden", """
+            SELECT COUNT_BIG(*) FROM [dbo].[PlatformAccessDenialAuditEntries]
+            WHERE [ActorUserId] = @viewer AND [Outcome] = 'forbidden'
+              AND [HttpMethod] = 'POST' AND [RouteTemplate] LIKE '%Permissions%'
+            """),
+        ("reserved catalog forbidden after authentication", """
+            SELECT COUNT_BIG(*) FROM [dbo].[PlatformAccessDenialAuditEntries]
+            WHERE [ActorUserId] = @subject AND [Outcome] = 'forbidden'
+              AND [HttpMethod] = 'POST' AND [RouteTemplate] LIKE '%Permissions%'
+            """),
+        ("stale role forbidden after persisted revocation", """
+            SELECT COUNT_BIG(*) FROM [dbo].[PlatformAccessDenialAuditEntries]
+            WHERE [ActorUserId] = @subject AND [Outcome] = 'forbidden'
+              AND [HttpMethod] = 'GET' AND [RouteTemplate] LIKE '%Roles%'
+            """),
+    };
+
+    foreach (var (name, sql) in checks)
+    {
+        await using var check = new SqlCommand(sql, connection);
+        check.Parameters.Add("@subject", SqlDbType.UniqueIdentifier).Value = subject;
+        check.Parameters.Add("@viewer", SqlDbType.UniqueIdentifier).Value = viewerId;
+        if (Convert.ToInt64(await check.ExecuteScalarAsync()) < 1)
+            throw new InvalidOperationException($"Missing persisted SQL security decision: {name}");
+    }
+
+    // The dedicated SQL trigger must prevent retroactive rewriting of decisions.
+    try
+    {
+        await using var tamper = new SqlCommand("""
+            UPDATE TOP (1) [dbo].[PlatformAccessDenialAuditEntries]
+            SET [Outcome] = 'forbidden';
+            """, connection);
+        await tamper.ExecuteNonQueryAsync();
+        throw new InvalidOperationException("SQL Server accepted an audit history UPDATE.");
+    }
+    catch (SqlException exception) when (exception.Number == 51002)
+    {
+        // Expected: append-only SQL Server trigger refused the update.
+    }
+
+    Console.WriteLine("PASS: committed denied-access audit rows and SQL append-only trigger.");
+    return;
+}
+
 await using var transaction = (SqlTransaction)await connection.BeginTransactionAsync(
     IsolationLevel.Serializable);
 
