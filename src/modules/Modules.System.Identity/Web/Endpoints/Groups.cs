@@ -24,6 +24,7 @@ namespace Groups.System.Identity.Web.Endpoints
                 .MapDelete(GroupDelete, "{id}")
                 .MapPatch(GroupChangeState, "{id}")
                 .MapPost(AddGroupMembers, "{GroupId}/addmembers")
+                .MapDelete(RemoveGroupMember, "{groupId:guid}/members/{userId:guid}")
                 .MapPut(GrantGroupRole, "{groupId:guid}/roles/{roleId:guid}")
                 .MapDelete(RevokeGroupRole, "{groupId:guid}/roles/{roleId:guid}")
             ;
