@@ -30,6 +30,16 @@ public static class PlatformPermissionCatalog
     ];
 
     public static IReadOnlyList<string> Codes => Definitions.Select(d => d.Code).ToArray();
+
+    // Definitions backing System authorization must be immutable through the
+    // administrative CRUD surface. This also reserves future Role/Permission keys.
+    public static bool IsReservedCode(string? code)
+    {
+        var key = code?.Trim().ToUpperInvariant();
+        return key is not null &&
+            (key.StartsWith("ROLES.", StringComparison.Ordinal) ||
+             key.StartsWith("PERMISSIONS.", StringComparison.Ordinal));
+    }
 }
 
 /// <summary>

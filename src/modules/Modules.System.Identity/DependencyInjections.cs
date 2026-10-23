@@ -32,6 +32,7 @@ namespace Modules.System.Identity
             services.AddScoped<TrustedTenantWriteScope>();
             services.AddScoped<AuthorizedPlatformMasterWrite>();
             services.AddScoped<PlatformRoleWriteExecutor>();
+            services.AddScoped<PlatformPermissionWriteExecutor>();
             services.AddScoped<TenantSaveChangesInterceptor>();
             services.AddBaseInfrastructureServices<IdentityDbContext>(configuration, "Identity", (sp,options) =>
         {
