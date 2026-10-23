@@ -16,8 +16,8 @@ namespace Modules.System.Identity.Application.Features.Permissions.Commands
         public override void Mapping(Profile profile)
         {
             profile.CreateMap<PermissionCreateCommand, Permission>()
-                .ForMember(x => x.ApiResources, opt => opt.MapFrom(x => x.PermissionResources!.Where(x=>x.Type=="API")!.Select(x => new PermissionApiResource { ApiResourceId = x.Id })))
-                .ForMember(x => x.UiResources, opt => opt.MapFrom(x => x.PermissionResources!.Where(x => x.Type == "UI").Select(x => new PermissionUiResource { UiResourceId = x.Id })))
+                .ForMember(x => x.ApiResources, opt => opt.MapFrom(x => (x.PermissionResources ?? new List<PermissionResource>()).Where(x=>x.Type=="API").Select(x => new PermissionApiResource { ApiResourceId = x.Id })))
+                .ForMember(x => x.UiResources, opt => opt.MapFrom(x => (x.PermissionResources ?? new List<PermissionResource>()).Where(x => x.Type == "UI").Select(x => new PermissionUiResource { UiResourceId = x.Id })))
                 ;
         }
     }
