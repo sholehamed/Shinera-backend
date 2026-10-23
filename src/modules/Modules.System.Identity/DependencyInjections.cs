@@ -34,6 +34,7 @@ namespace Modules.System.Identity
             services.AddScoped<PlatformRoleWriteExecutor>();
             services.AddScoped<PlatformGroupMembershipWriteExecutor>();
             services.AddScoped<PlatformUserRoleWriteService>();
+            services.AddScoped<PlatformGroupRoleWriteService>();
             services.AddScoped<PlatformPermissionWriteExecutor>();
             services.AddScoped<TenantSaveChangesInterceptor>();
             services.AddBaseInfrastructureServices<IdentityDbContext>(configuration, "Identity", (sp,options) =>
