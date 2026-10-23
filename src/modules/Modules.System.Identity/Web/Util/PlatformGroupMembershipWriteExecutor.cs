@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Data;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Modules.System.Identity.Application.Abstractions;
@@ -16,6 +17,7 @@ namespace Modules.System.Identity.Web.Util;
 public sealed class PlatformGroupMembershipWriteExecutor(
     AuthorizedPlatformMasterWrite gateway,
     IIdentityDbContext database,
+    Modules.System.Identity.Infrastructure.Persistence.Contexts.IdentityDbContext auditDatabase,
     TrustedTenantWriteScope trustedWrites,
     ILogger<PlatformGroupMembershipWriteExecutor> logger)
 {
@@ -73,7 +75,22 @@ public sealed class PlatformGroupMembershipWriteExecutor(
         var actor = principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
         logger.LogWarning("Platform group membership mutation {GroupId} by {ActorId} for {MemberCount} users",
             groupId, actor, members.Length);
+        // Legacy command SaveChanges runs inside the same SQL transaction as
+        // all member audit inserts. Any failed insert rolls the batch back.
+        await using var transaction = await auditDatabase.Database.BeginTransactionAsync(
+            IsolationLevel.Serializable, cancellationToken);
+        var existing = await database.UserGroups.AsNoTracking()
+            .Where(x => x.TenantId == master && x.GroupId == groupId &&
+                        members.Contains(x.UserId))
+            .Select(x => x.UserId).ToListAsync(cancellationToken);
+        var additions = members.Except(existing).ToArray();
         await execute();
+        foreach (var memberId in additions)
+            await PlatformGrantAuditWriter.RecordAsync(auditDatabase, actorId,
+                "UserGroup", groupId, memberId, "grant",
+                previousGrant: false, currentGrant: true,
+                cancellationToken: cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
         logger.LogInformation("Platform group membership mutation completed for {GroupId} by {ActorId}",
             groupId, actor);
     }
