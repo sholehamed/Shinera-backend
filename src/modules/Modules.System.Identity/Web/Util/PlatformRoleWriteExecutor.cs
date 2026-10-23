@@ -1,5 +1,8 @@
 using System.Security.Claims;
 using Microsoft.Extensions.Logging;
+using Microsoft.EntityFrameworkCore;
+using Modules.System.Identity.Application.Abstractions;
+using Modules.System.Identity.Infrastructure.Persistence;
 using Modules.System.Identity.Infrastructure.Persistence.Interceptors;
 using OpenIddict.Abstractions;
 
@@ -11,6 +14,7 @@ namespace Modules.System.Identity.Web.Util;
 /// </summary>
 public sealed class PlatformRoleWriteExecutor(
     AuthorizedPlatformMasterWrite gateway,
+    IIdentityDbContext database,
     ILogger<PlatformRoleWriteExecutor> logger)
 {
     public async Task<T> ExecuteAsync<T>(
@@ -18,9 +22,29 @@ public sealed class PlatformRoleWriteExecutor(
         string operation,
         Func<Task<T>> execute,
         Guid? targetRoleId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? newRoleName = null)
     {
         using var authorized = await gateway.BeginAsync(principal, targetRoleId, cancellationToken);
+
+        // The live SystemAdministrator grant is determined by the persisted
+        // SUPERADMIN role name. Ordinary Role CRUD must not forge, rename or
+        // dismantle this privileged identity. Use a reviewed migration instead.
+        if (string.Equals(newRoleName?.Trim(), "superadmin", StringComparison.OrdinalIgnoreCase))
+            throw new UnauthorizedAccessException("The platform SuperAdmin role is reserved.");
+
+        if (targetRoleId.HasValue)
+        {
+            var normalizedName = await database.Roles.AsNoTracking()
+                .Where(role => role.Id == targetRoleId.Value &&
+                               role.TenantId == DefaultSeedData.MasterTenant.Id)
+                .Select(role => role.NormalizedName)
+                .SingleOrDefaultAsync(cancellationToken);
+
+            if (string.Equals(normalizedName?.Trim(), "SUPERADMIN", StringComparison.OrdinalIgnoreCase))
+                throw new UnauthorizedAccessException("The platform SuperAdmin role cannot be modified through ordinary CRUD.");
+        }
+
         var actor = principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
         logger.LogInformation("Platform role operation {Operation} started by {ActorId} for {RoleId}",
             operation, actor, targetRoleId);
@@ -44,10 +68,11 @@ public sealed class PlatformRoleWriteExecutor(
         string operation,
         Func<Task> execute,
         Guid? targetRoleId = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? newRoleName = null)
         => ExecuteAsync(principal, operation, async () =>
         {
             await execute();
             return true;
-        }, targetRoleId, cancellationToken);
+        }, targetRoleId, cancellationToken, newRoleName);
 }
