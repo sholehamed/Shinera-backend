@@ -1,5 +1,4 @@
 using System.Security.Claims;
-using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -59,44 +58,44 @@ public sealed class PlatformAccessDenialAudit(IdentityDbContext database)
 }
 
 /// <summary>
-/// Decorates the default ASP.NET Core authorization result handler. On
-/// privilege failure the audit write happens before 401/403 is emitted. An
-/// audit outage returns 503 without invoking the protected endpoint: it does
-/// NOT change an authorization failure to success. Other authorization policies
-/// and successful requests behave exactly as before.
+/// Registers an OnStarting hook ahead of UseAuthorization so both middleware-
+/// level 401/403 and endpoint-level Forbid() (e.g. reserved catalog) persist.
+/// This hook executes before response headers commit, without reading user
+/// URLs, request bodies, headers or tokens and without affecting successful
+/// operations. One hook per request prevents duplicate audit rows.
 /// </summary>
-public sealed class AuditedPlatformAuthorizationResultHandler(
-    PlatformAccessDenialAudit audit,
-    ILogger<AuditedPlatformAuthorizationResultHandler> logger)
-    : IAuthorizationMiddlewareResultHandler
+public sealed class PlatformDeniedAccessAuditMiddleware(RequestDelegate next)
 {
-    private readonly AuthorizationMiddlewareResultHandler _defaultHandler = new();
-
-    public async Task HandleAsync(RequestDelegate next, HttpContext context,
-        AuthorizationPolicy policy, PolicyAuthorizationResult authorizeResult)
+    public async Task InvokeAsync(HttpContext context,
+        PlatformAccessDenialAudit audit,
+        ILogger<PlatformDeniedAccessAuditMiddleware> logger)
     {
-        if (authorizeResult.Succeeded ||
-            (!authorizeResult.Challenged && !authorizeResult.Forbidden) ||
-            !policy.Requirements.OfType<ActiveSystemAdministratorRequirement>().Any())
+        context.Response.OnStarting(async () =>
         {
-            await _defaultHandler.HandleAsync(next, context, policy, authorizeResult);
-            return;
-        }
+            if (context.Response.StatusCode is not (
+                    StatusCodes.Status401Unauthorized or StatusCodes.Status403Forbidden) ||
+                context.GetEndpoint() is not RouteEndpoint route ||
+                !route.Metadata.GetOrderedMetadata<IAuthorizeData>()
+                    .Any(x => x.Policy == SystemAuthorizationPolicies.Administrator))
+                return;
 
-        try
-        {
-            await audit.RecordAsync(context, authorizeResult.Challenged,
-                context.RequestAborted);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            // Never include bearer tokens, URL, request body or SQL detail in
-            // logging. The response is fail-closed and generic.
-            logger.LogError("Could not persist platform denial audit for a failed authorization.");
-            context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
-            return;
-        }
+            try
+            {
+                await audit.RecordAsync(context,
+                    context.Response.StatusCode == StatusCodes.Status401Unauthorized,
+                    context.RequestAborted);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Fail closed: never return a 401/403 with a silently missing
+                // audit record when SQL persistence is unavailable.
+                // Avoid exception bodies, user paths, tokens, or SQL details.
+                logger.LogError("Failed to persist a denied platform authorization decision.");
+                context.Response.StatusCode = StatusCodes.Status503ServiceUnavailable;
+                context.Response.ContentLength = 0;
+            }
+        });
 
-        await _defaultHandler.HandleAsync(next, context, policy, authorizeResult);
+        await next(context);
     }
 }
