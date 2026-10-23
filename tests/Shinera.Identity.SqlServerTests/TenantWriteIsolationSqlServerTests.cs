@@ -829,6 +829,24 @@ public sealed class TenantWriteIsolationSqlServerTests
             Assert.Single(stored);
             Assert.Equal(masterId, stored[0].TenantId);
             Assert.Equal(operatorRole.Id, stored[0].RoleId);
+
+            // Regression: the same administrator must not bypass the
+            // GroupRole self-assignment check by joining the group AFTER
+            // assigning its role. A failed membership must not be persisted.
+            var memberWriter = new PlatformGroupMembershipWriteExecutor(
+                gateway, guarded, trusted,
+                NullLogger<PlatformGroupMembershipWriteExecutor>.Instance);
+            var selfMembership = new AddGroupMembersCommand
+            {
+                StorageTenantId = masterId, GroupId = group.Id, UserIds = [actor.Id]
+            };
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                memberWriter.ExecuteAsync(principal, group.Id, selfMembership.UserIds,
+                    async () => await new AddGroupMembersCommandHandler(guarded)
+                        .Handle(selfMembership, CancellationToken.None)));
+            Assert.False(await guarded.UserGroups.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().AnyAsync(x => x.GroupId == group.Id && x.UserId == actor.Id));
+
             Assert.False(tenant.IsFilterDisabled);
             Assert.False(trusted.AllowsPlatformTenant(masterId));
 
