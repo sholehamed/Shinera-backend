@@ -3,7 +3,7 @@ using Domain.SharedKernel.Entities;
 
 namespace Modules.System.Identity.Domain.Entities
 {
-    public class GroupRole : FullAuditableEntity, IMustHaveTenant
+    public class GroupRole : FullAuditableEntity, IMustHaveTenant, IHardDeleteAssignment
     {
         public Guid TenantId { get; set; }
         public Guid RoleId { get; set; }
