@@ -65,12 +65,14 @@ namespace Modules.System.Identity.Application.Features.Permissions.Commands
 
             public async Task Handle(PermissionUpdateCommand command, CancellationToken cancellationToken)
             {
-                var apiResources = command.PermissionResources
+                // The resource collection is optional for this command.
+                var resources = command.PermissionResources ?? [];
+                var apiResources = resources
                     .Where(x => x.Type == "API")
                     .Select(x => x.Id)
                     .ToList();
 
-                var uiResources = command.PermissionResources
+                var uiResources = resources
                     .Where(x => x.Type == "UI")
                     .Select(x => x.Id)
                     .ToList();
