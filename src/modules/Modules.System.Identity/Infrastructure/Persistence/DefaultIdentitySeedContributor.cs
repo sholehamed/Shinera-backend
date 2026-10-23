@@ -35,9 +35,39 @@ public sealed class DefaultIdentitySeedContributor : ISeedContributor
                 await PlatformPermissionCatalogSeeder.GrantDevelopmentSuperAdminAsync(db);
             if (configuration.GetValue<bool>("Identity:E2E:Enabled"))
             {
+                // Disposable Development/CI HTTP fixtures ONLY. They deliberately
+                // hold no SuperAdmin grants and must never be seeded in Production.
                 await EnsureUserAsync(db, passwordHasher,
                     [new User(null, "e2e-viewer", "e2e-viewer@localhost.test",
                         "E2E", "Viewer", UserType.System)], developmentPassword);
+
+                var e2eTenant = await EnsureTenantAsync(db,
+                    new Tenant(null, "E2E HTTP Tenant", "e2e-http-ci", "localhost"));
+                await EnsureUserAsync(db, passwordHasher,
+                    [new User(e2eTenant.Id, "e2e-tenant",
+                        "e2e-tenant@localhost.test", "E2E", "Tenant", UserType.Tenant)],
+                    developmentPassword);
+
+                var groupId = Guid.Parse("7fbf4183-c8ab-4e2e-805d-65fd7fa95247");
+                if (!await db.Groups.IgnoreQueryFilters(["tenant"])
+                        .AnyAsync(g => g.Id == groupId))
+                {
+                    db.Groups.Add(new Group(groupId)
+                    {
+                        TenantId = masterTenant.Id,
+                        Name = "E2E HTTP Operators",
+                        NormalizedName = "E2E HTTP OPERATORS",
+                        IsActive = true
+                    });
+                }
+
+                var permissionId = Guid.Parse("45129362-d8b8-4bde-8600-98745e311923");
+                if (!await db.Permissions.AnyAsync(p => p.Id == permissionId))
+                {
+                    db.Permissions.Add(new Permission(permissionId,
+                        "e2e.http-access", null, "E2E HTTP access", null));
+                }
+                await db.SaveChangesAsync();
             }
         }
         //await EnsureTenantsAsync(db, DefaultSeedData.Tenants);

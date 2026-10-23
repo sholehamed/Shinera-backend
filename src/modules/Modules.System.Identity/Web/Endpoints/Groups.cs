@@ -3,6 +3,7 @@ using Groups.System.Identity.Application.Features.Groups.Queries;
 using Modules.System.Identity.Application.Features.Groups.Commands;
 using Modules.System.Identity.Infrastructure.Persistence;
 using Modules.System.Identity.Web.Util;
+using Microsoft.Extensions.Logging;
 using Modules.System.Identity.Application.Features.Groups.Queries;
 using Modules.System.Identity.Application.Features.Users.Queries;
 
@@ -46,7 +47,8 @@ namespace Groups.System.Identity.Web.Endpoints
 
         public async Task<Results<NoContent, ForbidHttpResult>> RevokeGroupRole(
             PlatformGroupRoleWriteService grants, HttpContext http,
-            Guid groupId, Guid roleId, CancellationToken cancellationToken)
+            ILogger<Groups> logger, Guid groupId, Guid roleId,
+            CancellationToken cancellationToken)
         {
             try
             {
@@ -54,7 +56,15 @@ namespace Groups.System.Identity.Web.Endpoints
                     assign: false, cancellationToken: cancellationToken);
                 return TypedResults.NoContent();
             }
-            catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+            catch (UnauthorizedAccessException exception)
+            {
+                // Fail closed for callers, but retain a structured security
+                // warning to diagnose denied operations during real HTTP E2E.
+                logger.LogWarning(exception,
+                    "Denied System GroupRole revoke for group {GroupId}, role {RoleId}",
+                    groupId, roleId);
+                return TypedResults.Forbid();
+            }
         }
 
         // Scoped URI-only revoke: groupId and userId are validated against
