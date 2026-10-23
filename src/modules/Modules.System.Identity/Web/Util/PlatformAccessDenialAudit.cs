@@ -4,10 +4,8 @@ using Microsoft.Data.SqlClient;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Modules.System.Identity.Infrastructure.Persistence;
-using Modules.System.Identity.Infrastructure.Persistence.Contexts;
 using OpenIddict.Abstractions;
 
 namespace Modules.System.Identity.Web.Util;
@@ -18,7 +16,7 @@ namespace Modules.System.Identity.Web.Util;
 /// Authorization headers, JWTs, client IPs, payloads or exception messages.
 /// An authenticated, validated System principal is the only trusted actor ID.
 /// </summary>
-public sealed class PlatformAccessDenialAudit(IdentityDbContext database)
+public sealed class PlatformAccessDenialAudit(IDbConnection connectionFactory)
 {
     public async Task RecordAsync(HttpContext context, bool challenged,
         CancellationToken cancellationToken)
@@ -51,8 +49,10 @@ public sealed class PlatformAccessDenialAudit(IdentityDbContext database)
         // A completely separate SQL connection prevents accidental enlistment
         // in the rejected request's DbContext transaction/change tracker.
         // Explicit typed parameters; never concatenate client-controlled data.
-        await using var connection = new SqlConnection(
-            database.Database.GetDbConnection().ConnectionString);
+        // Use the un-opened DI connection factory. SqlClient may redact the
+        // password from an EF DbConnection.ConnectionString after opening it,
+        // so never derive a fresh connection from the request's live DbContext.
+        await using var connection = new SqlConnection(connectionFactory.ConnectionString);
         await connection.OpenAsync(cancellationToken);
         await using var command = new SqlCommand("""
             INSERT INTO [dbo].[PlatformAccessDenialAuditEntries]
