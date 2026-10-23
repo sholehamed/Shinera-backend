@@ -1088,6 +1088,37 @@ public sealed class TenantWriteIsolationSqlServerTests
                     "DELETE FROM [dbo].[PlatformGrantAuditEntries]"));
             Assert.Equal(4, await CountAuditEventsAsync(guarded, "UserPermission"));
 
+            // Fail the audit INSERT after the two SaveChanges calls for an
+            // Allow -> Deny replacement. Both grant-row writes MUST roll
+            // back, because the audit statement shares their transaction.
+            await setup.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER [dbo].[TR_PlatformGrantAuditEntries_TestFail]
+                ON [dbo].[PlatformGrantAuditEntries]
+                AFTER INSERT
+                AS
+                BEGIN
+                    THROW 51002, 'Injected audit failure', 1;
+                END
+                """);
+            try
+            {
+                await Assert.ThrowsAsync<SqlException>(() =>
+                    writer.ChangeAsync(adminPrincipal, subject.Id, exportPermission.Id, false));
+            }
+            finally
+            {
+                await setup.Database.ExecuteSqlRawAsync(
+                    "DROP TRIGGER IF EXISTS [dbo].[TR_PlatformGrantAuditEntries_TestFail]");
+                guarded.ChangeTracker.Clear();
+            }
+
+            // The original Allow and exactly four earlier audit rows survived.
+            Assert.True(await guarded.UserPermissions.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().AnyAsync(x => x.TenantId == masterId &&
+                    x.UserId == subject.Id &&
+                    x.PermissionId == exportPermission.Id && x.IsGranted));
+            Assert.Equal(4, await CountAuditEventsAsync(guarded, "UserPermission"));
+
             // Revoked SuperAdmin role cannot authorize a stale access token.
             setup.UserRoles.Remove(actorGrant);
             await setup.SaveChangesAsync();
