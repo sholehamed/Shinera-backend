@@ -51,7 +51,14 @@ public sealed class TenantSaveChangesInterceptor(
             var targetTenant = entry.Entity.TenantId;
 
             if (trustedWrites.AllowsPlatformTenant(targetTenant))
+            {
+                // Master-scoped authority alone must never allow direct grant
+                // escalation. Explicit grant intents are bound to one target.
+                if (!trustedWrites.AllowsPlatformGrantMutation(entry.Entity))
+                    throw new UnauthorizedAccessException(
+                        "Platform grant mutation requires a verified operation and matching target.");
                 continue;
+            }
 
             // A System account cannot pick a TenantId in a request payload and
             // thereby gain permission to write to that tenant.

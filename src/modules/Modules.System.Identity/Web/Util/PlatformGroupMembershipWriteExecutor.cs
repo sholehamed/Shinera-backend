@@ -16,6 +16,7 @@ namespace Modules.System.Identity.Web.Util;
 public sealed class PlatformGroupMembershipWriteExecutor(
     AuthorizedPlatformMasterWrite gateway,
     IIdentityDbContext database,
+    TrustedTenantWriteScope trustedWrites,
     ILogger<PlatformGroupMembershipWriteExecutor> logger)
 {
     public async Task ExecuteAsync(
@@ -55,6 +56,11 @@ public sealed class PlatformGroupMembershipWriteExecutor(
                 cancellationToken);
         if (validMembers != members.Length)
             throw new UnauthorizedAccessException("Only active System accounts may join platform groups.");
+
+        // This scope permits only UserGroup mutations for the validated group,
+        // not UserRole/GroupRole/UserPermission or unrelated groups.
+        using var grant = trustedWrites.BeginPlatformGrantMutation(
+            PlatformGrantMutationKind.GroupMembers, groupId);
 
         var actor = principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
         logger.LogWarning("Platform group membership mutation {GroupId} by {ActorId} for {MemberCount} users",

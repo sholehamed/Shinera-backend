@@ -179,7 +179,7 @@ public sealed class TenantWriteIsolationSqlServerTests
             var writer = new PlatformRoleWriteExecutor(
                 new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
                     NullLogger<AuthorizedPlatformMasterWrite>.Instance),
-                guarded, NullLogger<PlatformRoleWriteExecutor>.Instance);
+                guarded, trusted, NullLogger<PlatformRoleWriteExecutor>.Instance);
 
             var id = await writer.ExecuteAsync(principal, "roles.create", async () =>
             {
@@ -264,7 +264,7 @@ public sealed class TenantWriteIsolationSqlServerTests
             var writer = new PlatformRoleWriteExecutor(
                 new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
                     NullLogger<AuthorizedPlatformMasterWrite>.Instance),
-                guarded, NullLogger<PlatformRoleWriteExecutor>.Instance);
+                guarded, trusted, NullLogger<PlatformRoleWriteExecutor>.Instance);
 
             var command = new UpdateRolePermissionsCommand
             {
@@ -491,7 +491,7 @@ public sealed class TenantWriteIsolationSqlServerTests
             var writer = new PlatformGroupMembershipWriteExecutor(
                 new AuthorizedPlatformMasterWrite(guard, tenant, trusted,
                     NullLogger<AuthorizedPlatformMasterWrite>.Instance),
-                guard, NullLogger<PlatformGroupMembershipWriteExecutor>.Instance);
+                guard, trusted, NullLogger<PlatformGroupMembershipWriteExecutor>.Instance);
 
             async Task AddMember(Guid groupId, Guid userId)
             {
@@ -525,6 +525,122 @@ public sealed class TenantWriteIsolationSqlServerTests
             await setup.SaveChangesAsync();
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
                 AddMember(ordinaryGroup.Id, actor.Id));
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+        });
+    }
+
+
+    [Fact]
+    public async Task Platform_master_write_requires_explicit_target_grant_intent()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guard, trusted) =>
+        {
+            var masterId = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(masterId, null, "Platform", "grant-scope-master", "localhost");
+            var actor = new User(null, "grant-admin", "grant-admin@example.test",
+                "Grant", "Admin", UserType.System)
+            {
+                NormalizedUserName = "GRANT-ADMIN",
+                NormalizedEmail = "GRANT-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-grant-stamp"
+            };
+            var super = new Role(masterId, "superadmin", "Root administrator");
+            var operatorRole = new Role(masterId, "operator", "Nonprivileged role");
+            var otherRole = new Role(masterId, "auditor", "Other role");
+            var group = new Group { TenantId = masterId, Name = "Operators", NormalizedName = "OPERATORS" };
+            var otherGroup = new Group { TenantId = masterId, Name = "Auditors", NormalizedName = "AUDITORS" };
+            var membership = new UserRole(masterId, actor.Id, super.Id);
+            var permission = new Permission { Code = "REPORTS.VIEW", Name = "View reports", IsActive = true };
+            setup.AddRange(master, actor, super, operatorRole, otherRole,
+                group, otherGroup, membership, permission);
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, isSuperAdmin: true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var gateway = new AuthorizedPlatformMasterWrite(guard, tenant, trusted,
+                NullLogger<AuthorizedPlatformMasterWrite>.Instance);
+            var roleWriter = new PlatformRoleWriteExecutor(gateway, guard, trusted,
+                NullLogger<PlatformRoleWriteExecutor>.Instance);
+            var groupWriter = new PlatformGroupMembershipWriteExecutor(gateway, guard, trusted,
+                NullLogger<PlatformGroupMembershipWriteExecutor>.Instance);
+
+            async Task DeniedSaveAsync(Action stage)
+            {
+                stage();
+                await Assert.ThrowsAsync<UnauthorizedAccessException>(() => guard.SaveChangesAsync());
+                guard.ChangeTracker.Clear();
+            }
+
+            // A validated platform administrator does not receive blanket
+            // authority to assign roles, group roles, direct user permissions,
+            // or even role permissions without a target-specific intent.
+            using (await gateway.BeginAsync(principal))
+            {
+                await DeniedSaveAsync(() => guard.UserRoles.Add(
+                    new UserRole(masterId, actor.Id, operatorRole.Id)));
+                await DeniedSaveAsync(() => guard.GroupRoles.Add(new GroupRole
+                {
+                    TenantId = masterId, GroupId = group.Id, RoleId = operatorRole.Id
+                }));
+                await DeniedSaveAsync(() => guard.UserPermissions.Add(new UserPermission
+                {
+                    TenantId = masterId, UserId = actor.Id, PermissionId = permission.Id
+                }));
+                await DeniedSaveAsync(() => guard.RolePermissions.Add(
+                    new RolePermission(masterId, operatorRole.Id, permission.Id)));
+                await DeniedSaveAsync(() => guard.UserGroups.Add(new UserGroup
+                {
+                    TenantId = masterId, UserId = actor.Id, GroupId = group.Id
+                }));
+            }
+
+            // Even an authorized RolePermission operation cannot target a
+            // different role or smuggle unrelated grant types into SaveChanges.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                roleWriter.ExecuteAsync(principal, "roles.permissions.replace",
+                    async () =>
+                    {
+                        guard.RolePermissions.Add(new RolePermission(masterId,
+                            otherRole.Id, permission.Id));
+                        await guard.SaveChangesAsync();
+                    }, operatorRole.Id));
+            guard.ChangeTracker.Clear();
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                roleWriter.ExecuteAsync(principal, "roles.permissions.replace",
+                    async () =>
+                    {
+                        guard.UserRoles.Add(new UserRole(masterId, actor.Id, operatorRole.Id));
+                        await guard.SaveChangesAsync();
+                    }, operatorRole.Id));
+            guard.ChangeTracker.Clear();
+
+            // Validated GroupMember mutations cannot modify another group or
+            // create a direct UserRole in the same trusted write operation.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                groupWriter.ExecuteAsync(principal, group.Id, [actor.Id], async () =>
+                {
+                    guard.UserGroups.Add(new UserGroup
+                    {
+                        TenantId = masterId, UserId = actor.Id, GroupId = otherGroup.Id
+                    });
+                    await guard.SaveChangesAsync();
+                }));
+            guard.ChangeTracker.Clear();
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                groupWriter.ExecuteAsync(principal, group.Id, [actor.Id], async () =>
+                {
+                    guard.UserRoles.Add(new UserRole(masterId, actor.Id, operatorRole.Id));
+                    await guard.SaveChangesAsync();
+                }));
+            guard.ChangeTracker.Clear();
+
+            Assert.False(tenant.IsFilterDisabled);
             Assert.False(trusted.AllowsPlatformTenant(masterId));
         });
     }

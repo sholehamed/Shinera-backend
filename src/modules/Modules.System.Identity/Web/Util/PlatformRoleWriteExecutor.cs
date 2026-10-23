@@ -15,6 +15,7 @@ namespace Modules.System.Identity.Web.Util;
 public sealed class PlatformRoleWriteExecutor(
     AuthorizedPlatformMasterWrite gateway,
     IIdentityDbContext database,
+    TrustedTenantWriteScope trustedWrites,
     ILogger<PlatformRoleWriteExecutor> logger)
 {
     public async Task<T> ExecuteAsync<T>(
@@ -44,6 +45,14 @@ public sealed class PlatformRoleWriteExecutor(
             if (string.Equals(normalizedName?.Trim(), "SUPERADMIN", StringComparison.OrdinalIgnoreCase))
                 throw new UnauthorizedAccessException("The platform SuperAdmin role cannot be modified through ordinary CRUD.");
         }
+
+        // Authorize RolePermission changes only for this exact reviewed role.
+        // All other role writes retain no grant mutation authority.
+        using var grant = operation == "roles.permissions.replace"
+            ? trustedWrites.BeginPlatformGrantMutation(
+                PlatformGrantMutationKind.RolePermissions,
+                targetRoleId ?? throw new UnauthorizedAccessException("Role target is required."))
+            : null;
 
         var actor = principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
         logger.LogInformation("Platform role operation {Operation} started by {ActorId} for {RoleId}",
