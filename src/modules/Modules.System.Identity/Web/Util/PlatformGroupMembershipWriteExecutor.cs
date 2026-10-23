@@ -34,6 +34,14 @@ public sealed class PlatformGroupMembershipWriteExecutor(
             members.Any(id => id == Guid.Empty))
             throw new UnauthorizedAccessException("A valid group and member list is required.");
 
+        // Prevent a two-step self-grant: an administrator must not be able
+        // to assign a role to a group and then join that group themselves.
+        // This also rejects idempotent/self-including batches.
+        if (!Guid.TryParse(principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value,
+                out var actorId) || members.Contains(actorId))
+            throw new UnauthorizedAccessException(
+                "Platform administrators cannot add themselves to a group.");
+
         var groupIsValid = await database.Groups.AsNoTracking()
             .AnyAsync(g => g.Id == groupId && g.TenantId == master && g.IsActive, cancellationToken);
         if (!groupIsValid)
