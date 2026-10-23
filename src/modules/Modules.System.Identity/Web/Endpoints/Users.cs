@@ -34,7 +34,7 @@ public class Users : EndpointGroupBase
     {
         try
         {
-            await grants.ChangeAsync(http.User, id, roleId, assign: true, cancellationToken);
+            await grants.ChangeAsync(http.User, id, roleId, assign: true, cancellationToken: cancellationToken);
             return TypedResults.NoContent();
         }
         catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
@@ -46,7 +46,7 @@ public class Users : EndpointGroupBase
     {
         try
         {
-            await grants.ChangeAsync(http.User, id, roleId, assign: false, cancellationToken);
+            await grants.ChangeAsync(http.User, id, roleId, assign: false, cancellationToken: cancellationToken);
             return TypedResults.NoContent();
         }
         catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
