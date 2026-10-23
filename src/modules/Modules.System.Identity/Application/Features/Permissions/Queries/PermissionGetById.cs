@@ -32,7 +32,7 @@ namespace Modules.System.Identity.Application.Features.Permissions.Queries
 
             var res = await context.Permissions.AsNoTracking().Include(x=>x.UiResources).Include(x=>x.ApiResources)
                 .Where(x => x.Id == request.Id)
-                .ProjectTo<PermissionGetByIdDto>(mapper.ConfigurationProvider).FirstOrDefaultAsync(cancellationToken) ?? throw new Exception("not found");
+                .ProjectTo<PermissionGetByIdDto>(mapper.ConfigurationProvider).FirstOrDefaultAsync(cancellationToken) ?? throw new KeyNotFoundException("Permission not found.");
             return res;
         }
     }
