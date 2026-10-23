@@ -25,11 +25,12 @@ public sealed class PlatformRoleWriteExecutor(
         Func<Task<T>> execute,
         Guid? targetRoleId = null,
         CancellationToken cancellationToken = default,
-        string? newRoleName = null)
+        string? newRoleName = null,
+        IReadOnlyCollection<Guid>? expectedPermissionIds = null)
     {
         if (operation != "roles.permissions.replace")
             return await ExecuteAuthorizedAsync(principal, operation, execute,
-                targetRoleId, cancellationToken, newRoleName);
+                targetRoleId, cancellationToken, newRoleName, expectedPermissionIds);
 
         // The entire unit (live administrator check, target validation,
         // association replacement and audit writes) is retried together.
@@ -39,7 +40,7 @@ public sealed class PlatformRoleWriteExecutor(
             await using var transaction = await database.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable, cancellationToken);
             var result = await ExecuteAuthorizedAsync(principal, operation, execute,
-                targetRoleId, cancellationToken, newRoleName);
+                targetRoleId, cancellationToken, newRoleName, expectedPermissionIds);
             await transaction.CommitAsync(cancellationToken);
             return result;
         });
@@ -51,7 +52,8 @@ public sealed class PlatformRoleWriteExecutor(
         Func<Task<T>> execute,
         Guid? targetRoleId,
         CancellationToken cancellationToken,
-        string? newRoleName)
+        string? newRoleName,
+        IReadOnlyCollection<Guid>? expectedPermissionIds)
     {
         using var authorized = await gateway.BeginAsync(principal, targetRoleId, cancellationToken);
 
@@ -103,6 +105,15 @@ public sealed class PlatformRoleWriteExecutor(
                     .Where(x => x.TenantId == master && x.RoleId == roleId)
                     .Select(x => x.PermissionId).ToListAsync(cancellationToken);
 
+                // When called through the HTTP endpoint, verify that the
+                // final persisted set matches the reviewed request exactly.
+                // A pre-tracked grant for the same role must not hitchhike.
+                if (expectedPermissionIds is not null &&
+                    (expectedPermissionIds.Any(x => x == Guid.Empty) ||
+                     !current.ToHashSet().SetEquals(expectedPermissionIds)))
+                    throw new UnauthorizedAccessException(
+                        "Role permission mutation differs from the validated request.");
+
                 foreach (var removed in previous.Except(current))
                     await PlatformGrantAuditWriter.RecordAsync(database, actorId,
                         "RolePermission", roleId, removed, "revoke",
@@ -140,10 +151,11 @@ public sealed class PlatformRoleWriteExecutor(
         Func<Task> execute,
         Guid? targetRoleId = null,
         CancellationToken cancellationToken = default,
-        string? newRoleName = null)
+        string? newRoleName = null,
+        IReadOnlyCollection<Guid>? expectedPermissionIds = null)
         => ExecuteAsync(principal, operation, async () =>
         {
             await execute();
             return true;
-        }, targetRoleId, cancellationToken, newRoleName);
+        }, targetRoleId, cancellationToken, newRoleName, expectedPermissionIds);
 }
