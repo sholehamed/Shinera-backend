@@ -33,7 +33,7 @@ var connectionString = new SqlConnectionStringBuilder
     InitialCatalog = databaseName,
     UserID = user,
     Password = password,
-    Encrypt = false,
+    Encrypt = SqlConnectionEncryptOption.Optional,
     TrustServerCertificate = true
 }.ConnectionString;
 
