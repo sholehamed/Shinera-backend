@@ -178,11 +178,39 @@ public sealed class PermissionConcurrencySqlServerTests
         });
     }
 
+    [Fact]
+    public async Task Migration_rejects_legacy_normalized_duplicates_without_rewriting_ids()
+    {
+        await WithDatabaseAsync(async (_, options) =>
+        {
+            await using var db = Context(options);
+            var one = new Permission { Code = "E2E.LEGACY-DUP", Name = "Legacy one" };
+            var two = new Permission { Code = " e2e.legacy-dup ", Name = "Legacy two" };
+            db.Permissions.AddRange(one, two);
+            await db.SaveChangesAsync();
+
+            var error = await Assert.ThrowsAnyAsync<Exception>(
+                () => db.Database.MigrateAsync());
+            Assert.Contains("normalized duplicate codes", error.ToString(),
+                StringComparison.OrdinalIgnoreCase);
+
+            // Neither legacy ID was silently merged, deleted or reassigned.
+            Assert.True(await db.Permissions.AnyAsync(p => p.Id == one.Id));
+            Assert.True(await db.Permissions.AnyAsync(p => p.Id == two.Id));
+
+            db.Permissions.Remove(two);
+            await db.SaveChangesAsync();
+            await db.Database.MigrateAsync();
+            Assert.True(await db.Permissions.AnyAsync(p => p.Id == one.Id));
+        }, targetMigration: "20261023210000_platformaccessdenialaudit");
+    }
+
     private static IdentityDbContext Context(DbContextOptions<IdentityDbContext> options)
         => new(options, new TenantContext());
 
     private static async Task WithDatabaseAsync(
-        Func<string, DbContextOptions<IdentityDbContext>, Task> work)
+        Func<string, DbContextOptions<IdentityDbContext>, Task> work,
+        string? targetMigration = null)
     {
         var connection = Environment.GetEnvironmentVariable("SHINERA_SQLSERVER_TEST_CONNECTION");
         if (string.IsNullOrWhiteSpace(connection))
@@ -199,7 +227,10 @@ public sealed class PermissionConcurrencySqlServerTests
         await using var setup = Context(options);
         try
         {
-            await setup.Database.MigrateAsync();
+            if (targetMigration is null)
+                await setup.Database.MigrateAsync();
+            else
+                await setup.Database.MigrateAsync(targetMigration);
             await work(cs.ConnectionString, options);
         }
         finally
