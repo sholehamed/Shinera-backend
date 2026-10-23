@@ -39,7 +39,10 @@ public sealed class PlatformProductionGrantInventorySqlServerTests
             Assert.Equal(0, await db.RolePermissions.IgnoreQueryFilters(["tenant"])
                 .CountAsync(x => x.TenantId == master));
             var reportAgain = await PlatformProductionGrantInventory.ReadAsync(db);
-            Assert.Equal(before, reportAgain);
+            Assert.Equal(before.MissingSuperAdminGrantCodes.ToArray(),
+                reportAgain.MissingSuperAdminGrantCodes.ToArray());
+            Assert.Equal(before.ActiveMasterSuperAdminAssignments,
+                reportAgain.ActiveMasterSuperAdminAssignments);
 
             var ids = await db.Permissions.AsNoTracking()
                 .Where(x => PlatformPermissionCatalog.Codes.Contains(x.Code))
