@@ -57,6 +57,21 @@ namespace Groups.System.Identity.Web.Endpoints
             catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
         }
 
+        // Scoped URI-only revoke: groupId and userId are validated against
+        // Master storage inside a live, Serializable write transaction.
+        public async Task<Results<NoContent, ForbidHttpResult>> RemoveGroupMember(
+            PlatformGroupMembershipRemovalService removal,
+            HttpContext http, Guid groupId, Guid userId,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                await removal.RevokeAsync(http.User, groupId, userId, cancellationToken);
+                return TypedResults.NoContent();
+            }
+            catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+        }
+
         public async Task<Results<NoContent, ForbidHttpResult>> AddGroupMembers(
             IDispatcher sender, PlatformGroupMembershipWriteExecutor write,
             HttpContext http, Guid GroupId, AddGroupMembersCommand parameter,
