@@ -148,6 +148,52 @@ public sealed class PlatformMasterGrantBackfillSqlServerTests
     }
 
     [Fact]
+    public async Task Failure_on_second_grant_audit_rolls_back_the_entire_two_grant_batch()
+    {
+        await WithDatabaseAsync(async (db, databaseName) =>
+        {
+            var (role, actor, reviewer, permissions) = await SeedAsync(db);
+            var first = new PlatformMasterGrantBackfill.Grant(Guid.NewGuid(), permissions[0].Id);
+            var second = new PlatformMasterGrantBackfill.Grant(Guid.NewGuid(), permissions[1].Id);
+            var manifest = new PlatformMasterGrantBackfill.Manifest(
+                DefaultSeedData.MasterTenant.Id, role.Id, actor.Id, reviewer.Id,
+                databaseName, [], [first, second]);
+
+            // First audit INSERT succeeds, second fails. SQL transaction must
+            // undo the first audit AND both RolePermission inserts.
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER [dbo].[TR_GrantBackfill_FailSecondAuditTest]
+                ON [dbo].[PlatformGrantAuditEntries] AFTER INSERT AS
+                BEGIN
+                    IF (SELECT COUNT_BIG(*) FROM [dbo].[PlatformGrantAuditEntries]
+                        WHERE [Kind] = 'RolePermission' AND [TargetId] IN
+                            (SELECT [TargetId] FROM inserted)) >= 2
+                        THROW 51076, 'Simulated failure on second grant audit.', 1;
+                END
+                """);
+            try
+            {
+                await Assert.ThrowsAnyAsync<Exception>(
+                    () => PlatformMasterGrantBackfill.ApplyAsync(db, manifest));
+            }
+            finally
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    "DROP TRIGGER IF EXISTS [dbo].[TR_GrantBackfill_FailSecondAuditTest]");
+            }
+
+            Assert.False(await db.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .AnyAsync(x => x.Id == first.AssignmentId ||
+                               x.Id == second.AssignmentId));
+            var audits = await db.Database.SqlQueryRaw<long>(
+                "SELECT COUNT_BIG(*) AS [Value] FROM [dbo].[PlatformGrantAuditEntries] " +
+                "WHERE [Kind] = 'RolePermission' AND [TargetId] = {0}",
+                role.Id).SingleAsync();
+            Assert.Equal(0, audits);
+        });
+    }
+
+    [Fact]
     public async Task Rollback_rejects_a_matching_row_without_prior_committed_grant_audit()
     {
         await WithDatabaseAsync(async (db, databaseName) =>
