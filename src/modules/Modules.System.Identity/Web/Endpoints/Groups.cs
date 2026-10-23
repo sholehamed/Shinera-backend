@@ -24,8 +24,38 @@ namespace Groups.System.Identity.Web.Endpoints
                 .MapDelete(GroupDelete, "{id}")
                 .MapPatch(GroupChangeState, "{id}")
                 .MapPost(AddGroupMembers, "{GroupId}/addmembers")
+                .MapPut(GrantGroupRole, "{groupId:guid}/roles/{roleId:guid}")
+                .MapDelete(RevokeGroupRole, "{groupId:guid}/roles/{roleId:guid}")
             ;
         }
+        // SystemAdministrator is required for both routes, and the service
+        // revalidates persisted actor, group, members and role on every request.
+        public async Task<Results<NoContent, ForbidHttpResult>> GrantGroupRole(
+            PlatformGroupRoleWriteService grants, HttpContext http,
+            Guid groupId, Guid roleId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await grants.ChangeAsync(http.User, groupId, roleId,
+                    assign: true, cancellationToken: cancellationToken);
+                return TypedResults.NoContent();
+            }
+            catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+        }
+
+        public async Task<Results<NoContent, ForbidHttpResult>> RevokeGroupRole(
+            PlatformGroupRoleWriteService grants, HttpContext http,
+            Guid groupId, Guid roleId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await grants.ChangeAsync(http.User, groupId, roleId,
+                    assign: false, cancellationToken: cancellationToken);
+                return TypedResults.NoContent();
+            }
+            catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+        }
+
         public async Task<Results<NoContent, ForbidHttpResult>> AddGroupMembers(
             IDispatcher sender, PlatformGroupMembershipWriteExecutor write,
             HttpContext http, Guid GroupId, AddGroupMembersCommand parameter,
