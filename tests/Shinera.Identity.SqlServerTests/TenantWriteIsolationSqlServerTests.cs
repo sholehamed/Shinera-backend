@@ -747,6 +747,11 @@ public sealed class TenantWriteIsolationSqlServerTests
             Assert.Empty(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
                 .AsNoTracking().Where(x => x.UserId == systemUser.Id).ToListAsync());
 
+            // One durable entry per changed operation; denied and duplicate
+            // operations do not produce audit history.
+            Assert.Equal(2, await CountAuditEventsAsync(guarded, "UserRole"));
+            Assert.Equal(admin.Id, await AuditActorAsync(guarded, "UserRole"));
+
             // Admin authorization is rechecked on the live database for every
             // grant; a stale JWT cannot keep granting after role revocation.
             setup.UserRoles.Remove(adminMembership);
@@ -892,6 +897,9 @@ public sealed class TenantWriteIsolationSqlServerTests
             Assert.False(await writer.ChangeAsync(principal, group.Id, operatorRole.Id, false));
             Assert.Empty(await guarded.GroupRoles.IgnoreQueryFilters(["tenant"])
                 .AsNoTracking().Where(x => x.GroupId == group.Id).ToListAsync());
+
+            Assert.Equal(2, await CountAuditEventsAsync(guarded, "GroupRole"));
+            Assert.Equal(actor.Id, await AuditActorAsync(guarded, "GroupRole"));
 
             // The persisted administrator role is checked for every operation,
             // irrespective of a still-valid SUPERADMIN claim on an old token.
@@ -1065,6 +1073,21 @@ public sealed class TenantWriteIsolationSqlServerTests
                 .AsNoTracking().AnyAsync(x => x.TenantId == masterId &&
                     x.GroupId == group.Id && x.RoleId == ordinaryRole.Id));
 
+            // Deny, replacement with Allow, clear, and explicit Export Allow
+            // each create one durable audit event. Repeats and denied writes
+            // must not create audit entries.
+            Assert.Equal(4, await CountAuditEventsAsync(guarded, "UserPermission"));
+            Assert.Equal(actor.Id, await AuditActorAsync(guarded, "UserPermission"));
+
+            // Audit rows must not be editable or deletable via SQL either.
+            await Assert.ThrowsAsync<SqlException>(() =>
+                guarded.Database.ExecuteSqlRawAsync(
+                    "UPDATE [dbo].[PlatformGrantAuditEntries] SET [Action] = 'forged'"));
+            await Assert.ThrowsAsync<SqlException>(() =>
+                guarded.Database.ExecuteSqlRawAsync(
+                    "DELETE FROM [dbo].[PlatformGrantAuditEntries]"));
+            Assert.Equal(4, await CountAuditEventsAsync(guarded, "UserPermission"));
+
             // Revoked SuperAdmin role cannot authorize a stale access token.
             setup.UserRoles.Remove(actorGrant);
             await setup.SaveChangesAsync();
@@ -1074,6 +1097,16 @@ public sealed class TenantWriteIsolationSqlServerTests
             Assert.False(trusted.AllowsPlatformTenant(masterId));
         });
     }
+
+    private static Task<int> CountAuditEventsAsync(IdentityDbContext db, string kind) =>
+        db.Database.SqlQueryRaw<int>(
+            "SELECT COUNT(*) AS [Value] FROM [dbo].[PlatformGrantAuditEntries] WHERE [Kind] = @kind",
+            new SqlParameter("@kind", kind)).SingleAsync();
+
+    private static Task<Guid> AuditActorAsync(IdentityDbContext db, string kind) =>
+        db.Database.SqlQueryRaw<Guid>(
+            "SELECT TOP(1) [ActorUserId] AS [Value] FROM [dbo].[PlatformGrantAuditEntries] WHERE [Kind] = @kind ORDER BY [OccurredAtUtc]",
+            new SqlParameter("@kind", kind)).SingleAsync();
 
     private static async Task WithTestDatabaseAsync(
         Func<IdentityDbContext, TenantContext, IdentityDbContext, TrustedTenantWriteScope, Task> test)
