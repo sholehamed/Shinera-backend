@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Data;
 using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using Modules.System.Identity.Application.Abstractions;
@@ -15,6 +16,7 @@ namespace Modules.System.Identity.Web.Util;
 public sealed class PlatformRoleWriteExecutor(
     AuthorizedPlatformMasterWrite gateway,
     IIdentityDbContext database,
+    Modules.System.Identity.Infrastructure.Persistence.Contexts.IdentityDbContext auditDatabase,
     TrustedTenantWriteScope trustedWrites,
     ILogger<PlatformRoleWriteExecutor> logger)
 {
@@ -59,6 +61,35 @@ public sealed class PlatformRoleWriteExecutor(
             operation, actor, targetRoleId);
         try
         {
+            if (operation == "roles.permissions.replace" && targetRoleId.HasValue)
+            {
+                var roleId = targetRoleId.Value;
+                var master = DefaultSeedData.MasterTenant.Id;
+                await using var transaction = await auditDatabase.Database.BeginTransactionAsync(
+                    IsolationLevel.Serializable, cancellationToken);
+                var previous = await database.RolePermissions.AsNoTracking()
+                    .Where(x => x.TenantId == master && x.RoleId == roleId)
+                    .Select(x => x.PermissionId).ToListAsync(cancellationToken);
+                var result = await execute();
+                var current = await database.RolePermissions.AsNoTracking()
+                    .Where(x => x.TenantId == master && x.RoleId == roleId)
+                    .Select(x => x.PermissionId).ToListAsync(cancellationToken);
+                if (!Guid.TryParse(actor, out var actorId))
+                    throw new UnauthorizedAccessException("A verified actor is required for grant audit.");
+                foreach (var removed in previous.Except(current))
+                    await PlatformGrantAuditWriter.RecordAsync(auditDatabase, actorId,
+                        "RolePermission", roleId, removed, "revoke",
+                        previousGrant: true, currentGrant: false,
+                        cancellationToken: cancellationToken);
+                foreach (var added in current.Except(previous))
+                    await PlatformGrantAuditWriter.RecordAsync(auditDatabase, actorId,
+                        "RolePermission", roleId, added, "grant",
+                        previousGrant: false, currentGrant: true,
+                        cancellationToken: cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return result;
+            }
+
             var result = await execute();
             logger.LogInformation("Platform role operation {Operation} completed by {ActorId}",
                 operation, actor);
