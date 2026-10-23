@@ -77,6 +77,11 @@ public sealed class PlatformUserRoleWriteService(
                 // SaveChanges enforces both the fixed master scope and exact
                 // UserRole pair. Unrelated tracked grants fail closed.
                 await database.SaveChangesAsync(cancellationToken);
+                await PlatformGrantAuditWriter.RecordAsync(database, actorId,
+                    "UserRole", targetUserId, roleId,
+                    assign ? "grant" : "revoke",
+                    previousGrant: !assign, currentGrant: assign,
+                    cancellationToken: cancellationToken);
             }
 
             await transaction.CommitAsync(cancellationToken);
