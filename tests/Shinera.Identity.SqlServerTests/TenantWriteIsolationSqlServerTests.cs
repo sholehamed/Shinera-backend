@@ -904,6 +904,177 @@ public sealed class TenantWriteIsolationSqlServerTests
         });
     }
 
+
+    [Fact]
+    public async Task Direct_system_permission_deny_overrides_inherited_role_and_group_allows()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guarded, trusted) =>
+        {
+            var masterId = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(masterId, null, "Platform", "direct-permission-master", "localhost");
+            var foreign = new Tenant(null, "Tenant", "direct-permission-tenant", "localhost");
+            var actor = new User(null, "up-admin", "up-admin@example.test",
+                "Permission", "Admin", UserType.System)
+            {
+                NormalizedUserName = "UP-ADMIN", NormalizedEmail = "UP-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var subject = new User(null, "up-user", "up-user@example.test",
+                "Permission", "User", UserType.System)
+            {
+                NormalizedUserName = "UP-USER", NormalizedEmail = "UP-USER@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var tenantUser = new User(foreign.Id, "up-tenant", "up-tenant@example.test",
+                "Tenant", "User", UserType.Tenant)
+            {
+                NormalizedUserName = "UP-TENANT", NormalizedEmail = "UP-TENANT@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var otherAdmin = new User(null, "up-privileged", "up-privileged@example.test",
+                "Privileged", "User", UserType.System)
+            {
+                NormalizedUserName = "UP-PRIVILEGED",
+                NormalizedEmail = "UP-PRIVILEGED@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var adminRole = new Role(masterId, "superadmin", "Reserved master role");
+            var ordinaryRole = new Role(masterId, "operator", "Ordinary role");
+            var groupRole = new Role(masterId, "reviewer", "Inherited group role");
+            var group = new Group
+            {
+                TenantId = masterId, Name = "Reviewers", NormalizedName = "REVIEWERS"
+            };
+            var viewPermission = new Permission
+            {
+                Code = "APPOINTMENTS.VIEW", Name = "View appointments", IsActive = true
+            };
+            var exportPermission = new Permission
+            {
+                Code = "APPOINTMENTS.EXPORT", Name = "Export appointments", IsActive = true
+            };
+            var reserved = new Permission
+            {
+                Code = "ROLES.CREATE", Name = "Create privileged roles", IsActive = true
+            };
+            setup.AddRange(master, foreign, actor, subject, tenantUser, otherAdmin,
+                adminRole, ordinaryRole, groupRole, group, viewPermission,
+                exportPermission, reserved);
+            var actorGrant = new UserRole(masterId, actor.Id, adminRole.Id);
+            setup.UserRoles.AddRange(
+                actorGrant,
+                new UserRole(masterId, subject.Id, ordinaryRole.Id),
+                new UserRole(masterId, otherAdmin.Id, adminRole.Id));
+            setup.RolePermissions.AddRange(
+                new RolePermission(masterId, ordinaryRole.Id, viewPermission.Id),
+                new RolePermission(masterId, groupRole.Id, viewPermission.Id));
+            setup.GroupRoles.Add(new GroupRole
+            {
+                TenantId = masterId, GroupId = group.Id, RoleId = groupRole.Id
+            });
+            setup.UserGroups.Add(new UserGroup
+            {
+                TenantId = masterId, UserId = subject.Id, GroupId = group.Id
+            });
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, isSuperAdmin: true);
+            var adminPrincipal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var subjectPrincipal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, subject.Id.ToString()),
+                new Claim("account_type", "system")
+            ], "test"));
+            var gateway = new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
+                NullLogger<AuthorizedPlatformMasterWrite>.Instance);
+            var writer = new PlatformUserPermissionWriteService(
+                guarded, gateway, trusted,
+                NullLogger<PlatformUserPermissionWriteService>.Instance);
+
+            async Task<bool> CanViewAsync()
+            {
+                var req = new SystemPermissionRequirement("appointments", "view");
+                var ctx = new Microsoft.AspNetCore.Authorization.AuthorizationHandlerContext(
+                    [req], subjectPrincipal, null);
+                await new SystemPermissionHandler(guarded).HandleAsync(ctx);
+                return ctx.HasSucceeded;
+            }
+
+            // Role and group both grant the permission, but a direct user
+            // denial must take precedence over both inherited grants.
+            Assert.True(await CanViewAsync());
+            Assert.True(await writer.ChangeAsync(
+                adminPrincipal, subject.Id, viewPermission.Id, false));
+            Assert.False(await writer.ChangeAsync(
+                adminPrincipal, subject.Id, viewPermission.Id, false));
+            Assert.False(await CanViewAsync());
+
+            // Switching deny -> allow replaces the unique row atomically.
+            Assert.True(await writer.ChangeAsync(
+                adminPrincipal, subject.Id, viewPermission.Id, true));
+            Assert.False(await writer.ChangeAsync(
+                adminPrincipal, subject.Id, viewPermission.Id, true));
+            Assert.True(await CanViewAsync());
+
+            // Removing the override restores ordinary role/group inheritance.
+            Assert.True(await writer.ChangeAsync(
+                adminPrincipal, subject.Id, viewPermission.Id, null));
+            Assert.False(await writer.ChangeAsync(
+                adminPrincipal, subject.Id, viewPermission.Id, null));
+            Assert.True(await CanViewAsync());
+
+            // Explicit allow grants a permission absent from inherited roles.
+            Assert.True(await writer.ChangeAsync(
+                adminPrincipal, subject.Id, exportPermission.Id, true));
+            var exportReq = new SystemPermissionRequirement("appointments", "export");
+            var exportContext = new Microsoft.AspNetCore.Authorization.AuthorizationHandlerContext(
+                [exportReq], subjectPrincipal, null);
+            await new SystemPermissionHandler(guarded).HandleAsync(exportContext);
+            Assert.True(exportContext.HasSucceeded);
+
+            // Reject privilege escalation, foreign subjects, reserved catalog
+            // permissions, attempts to manipulate SuperAdmins, and self writes.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(adminPrincipal, actor.Id, viewPermission.Id, false));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(adminPrincipal, otherAdmin.Id, viewPermission.Id, false));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(adminPrincipal, tenantUser.Id, viewPermission.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(adminPrincipal, subject.Id, reserved.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(adminPrincipal, subject.Id, reserved.Id, false));
+
+            // Unrelated tracked grant rows must not ride along with an
+            // authorized override write.
+            guarded.GroupRoles.Add(new GroupRole
+            {
+                TenantId = masterId, GroupId = group.Id, RoleId = ordinaryRole.Id
+            });
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(adminPrincipal, subject.Id, exportPermission.Id, false));
+            guarded.ChangeTracker.Clear();
+            Assert.True(await guarded.UserPermissions.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().AnyAsync(x => x.TenantId == masterId &&
+                    x.UserId == subject.Id &&
+                    x.PermissionId == exportPermission.Id && x.IsGranted));
+            Assert.False(await guarded.GroupRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().AnyAsync(x => x.TenantId == masterId &&
+                    x.GroupId == group.Id && x.RoleId == ordinaryRole.Id));
+
+            // Revoked SuperAdmin role cannot authorize a stale access token.
+            setup.UserRoles.Remove(actorGrant);
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(adminPrincipal, subject.Id, exportPermission.Id, null));
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+        });
+    }
+
     private static async Task WithTestDatabaseAsync(
         Func<IdentityDbContext, TenantContext, IdentityDbContext, TrustedTenantWriteScope, Task> test)
     {

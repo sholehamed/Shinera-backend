@@ -8,7 +8,7 @@ namespace Modules.System.Identity.Infrastructure.Persistence.Interceptors;
 /// Infrastructure-owned write overrides. Query-filter bypass is intentionally NOT
 /// a write bypass. Only trusted infrastructure code can open these scopes.
 /// </summary>
-internal enum PlatformGrantMutationKind { RolePermissions, GroupMembers, UserRoles, GroupRoles }
+internal enum PlatformGrantMutationKind { RolePermissions, GroupMembers, UserRoles, GroupRoles, UserPermissions }
 
 public sealed class TrustedTenantWriteScope(ILogger<TrustedTenantWriteScope> logger)
 {
@@ -28,7 +28,7 @@ public sealed class TrustedTenantWriteScope(ILogger<TrustedTenantWriteScope> log
         if (_platformActor is null ||
             _platformTenant != DefaultSeedData.MasterTenant.Id ||
             targetId == Guid.Empty || _grantIntent is not null ||
-            ((kind is PlatformGrantMutationKind.UserRoles or PlatformGrantMutationKind.GroupRoles) &&
+            ((kind is PlatformGrantMutationKind.UserRoles or PlatformGrantMutationKind.GroupRoles or PlatformGrantMutationKind.UserPermissions) &&
              (relatedId is null || relatedId == Guid.Empty)))
             throw new UnauthorizedAccessException("A verified, non-nested platform grant operation is required.");
 
@@ -53,7 +53,10 @@ public sealed class TrustedTenantWriteScope(ILogger<TrustedTenantWriteScope> log
             { Kind: PlatformGrantMutationKind.GroupRoles } intent &&
             gr.GroupId == intent.TargetId &&
             gr.RoleId == intent.RelatedId,
-        UserPermission => false,
+        UserPermission up => _grantIntent is
+            { Kind: PlatformGrantMutationKind.UserPermissions } intent &&
+            up.UserId == intent.TargetId &&
+            up.PermissionId == intent.RelatedId,
         RolePermission rp => _grantIntent is
             { Kind: PlatformGrantMutationKind.RolePermissions } intent &&
             rp.RoleId == intent.TargetId,

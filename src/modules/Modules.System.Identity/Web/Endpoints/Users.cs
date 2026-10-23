@@ -22,6 +22,9 @@ public class Users : EndpointGroupBase
             .MapPatch(UserChangeLockState, "{id}/changeLock")
             .MapPut(GrantPlatformUserRole, "{id:guid}/roles/{roleId:guid}")
             .MapDelete(RevokePlatformUserRole, "{id:guid}/roles/{roleId:guid}")
+            .MapPut(AllowPlatformUserPermission, "{id:guid}/permissions/{permissionId:guid}/allow")
+            .MapPut(DenyPlatformUserPermission, "{id:guid}/permissions/{permissionId:guid}/deny")
+            .MapDelete(RemovePlatformUserPermission, "{id:guid}/permissions/{permissionId:guid}")
 
         ;
     }
@@ -47,6 +50,48 @@ public class Users : EndpointGroupBase
         try
         {
             await grants.ChangeAsync(http.User, id, roleId, assign: false, cancellationToken: cancellationToken);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+    }
+
+    // An explicit user denial supersedes both direct and inherited role/group
+    // grants in SystemPermissionHandler. These endpoints only mutate one
+    // non-reserved Master UserPermission override at a time.
+    public async Task<Results<NoContent, ForbidHttpResult>> AllowPlatformUserPermission(
+        PlatformUserPermissionWriteService permissions, HttpContext http,
+        Guid id, Guid permissionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await permissions.ChangeAsync(http.User, id, permissionId,
+                isGranted: true, cancellationToken: cancellationToken);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+    }
+
+    public async Task<Results<NoContent, ForbidHttpResult>> DenyPlatformUserPermission(
+        PlatformUserPermissionWriteService permissions, HttpContext http,
+        Guid id, Guid permissionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await permissions.ChangeAsync(http.User, id, permissionId,
+                isGranted: false, cancellationToken: cancellationToken);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+    }
+
+    public async Task<Results<NoContent, ForbidHttpResult>> RemovePlatformUserPermission(
+        PlatformUserPermissionWriteService permissions, HttpContext http,
+        Guid id, Guid permissionId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await permissions.ChangeAsync(http.User, id, permissionId,
+                isGranted: null, cancellationToken: cancellationToken);
             return TypedResults.NoContent();
         }
         catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
