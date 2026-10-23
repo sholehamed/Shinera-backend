@@ -186,6 +186,11 @@ def run():
     check("DELETE", member, 204, token=admin)
     check("DELETE", member, 204, token=admin)  # Idempotent revoke
     check("DELETE", group_role, 204, token=admin)
+    check("DELETE", group_role, 204, token=admin)  # No-op
+    # A revoke must physically remove the old grant link. Soft deletion
+    # would leave a duplicate (GroupId, RoleId) and block a new grant.
+    check("PUT", group_role, 204, token=admin)
+    check("DELETE", group_role, 204, token=admin)
     check("DELETE", groups + "/" + GROUP_ID + "/members/" + tenant_id,
           403, token=admin)
 
