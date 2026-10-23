@@ -8,6 +8,7 @@ embedded in the test. A failed assertion exits nonzero and fails GitHub Actions.
 import base64
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -90,7 +91,7 @@ def login(username, context, tenant=None):
     assert uuid.UUID(claims["sub"]), "Missing or invalid subject ID"
     if context == "system":
         assert "tenant_id" not in claims, "System user must never have tenant_id"
-    return access_token, str(uuid.UUID(claims["sub"]))
+    return access_token, str(uuid.UUID(claims["sub"])), json.loads(result).get("refresh_token")
 
 
 def json_value(body):
@@ -99,9 +100,9 @@ def json_value(body):
 
 def run():
     print("Running disposable SQL Server + real OpenIddict HTTP security matrix", flush=True)
-    admin, admin_id = login("admin", "system")
-    viewer, viewer_id = login("e2e-viewer", "system")
-    tenant, tenant_id = login("e2e-tenant", "tenant", "e2e-http-ci")
+    admin, admin_id, admin_refresh = login("admin", "system")
+    viewer, viewer_id, _ = login("e2e-viewer", "system")
+    tenant, tenant_id, _ = login("e2e-tenant", "tenant", "e2e-http-ci")
     assert admin_id != viewer_id != tenant_id
 
     roles = "/api/system/Roles"
@@ -208,7 +209,44 @@ def run():
     # Finish actual platform Role CRUD after related grant links are removed.
     check("DELETE", roles + "/" + role_id, 204, token=admin)
 
-    print(f"PASS: {PASSED} real HTTP status checks, plus persisted Role invariants", flush=True)
+    # Last step: prove an ALREADY SIGNED privileged JWT cannot continue using
+    # SystemAdministrator endpoints when its live Master SuperAdmin grant is
+    # revoked at SQL level. This tool operates solely on the disposable E2E DB;
+    # there is intentionally no production/development HTTP backdoor.
+    check("GET", roles + "/lookup", 200, token=admin)
+    if not admin_refresh:
+        raise AssertionError("Expected an OpenIddict offline_access refresh token")
+    tool = "tests/Shinera.Identity.E2E.SqlMutator/Shinera.Identity.E2E.SqlMutator.csproj"
+    try:
+        mutation = subprocess.run(
+            ["dotnet", "run", "--project", tool, "-c", "Release",
+             "--no-build", "--", "revoke-seeded-superadmin", admin_id],
+            check=True, capture_output=True, text=True, timeout=90)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise AssertionError("Disposable database revocation did not succeed") from exc
+    if "PASS: disposable SQL Server removed exactly one" not in mutation.stdout:
+        raise AssertionError("Disposable revocation tool did not report the expected single change")
+    print("PASS: seeded SuperAdmin was revoked in the disposable SQL Server", flush=True)
+
+    # EXACT SAME signed JWT (same serialized bytes) has valid token lifetime,
+    # but must now fail privileged authorization because role membership is
+    # re-read from persisted data on every sensitive HTTP request.
+    check("GET", roles + "/lookup", 403, token=admin)
+    check("POST", roles, 403, token=admin, data=role_payload)
+
+    # The outstanding refresh token is also denied: an old role snapshot
+    # must not mint a fresh privileged access token after the persisted revoke.
+    refresh_form = urllib.parse.urlencode({
+        "grant_type": "refresh_token", "client_id": "postman",
+        "refresh_token": admin_refresh,
+    }).encode("ascii")
+    response = check("POST", "/api/system/Auth/login", 400,
+                     data=refresh_form,
+                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+    assert json_value(response).get("error") == "invalid_grant", (
+        "Stale privileged refresh must fail with invalid_grant")
+
+    print(f"PASS: {PASSED} real HTTP status checks, persisted Role and stale-JWT invariants", flush=True)
 
 
 if __name__ == "__main__":
