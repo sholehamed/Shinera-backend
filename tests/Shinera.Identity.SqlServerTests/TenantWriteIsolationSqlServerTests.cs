@@ -758,6 +758,134 @@ public sealed class TenantWriteIsolationSqlServerTests
         });
     }
 
+
+    [Fact]
+    public async Task Platform_group_role_grants_are_scoped_idempotent_and_revocable()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guarded, trusted) =>
+        {
+            var masterId = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(masterId, null, "Platform", "group-role-master", "localhost");
+            var foreign = new Tenant(null, "Tenant", "group-role-foreign", "localhost");
+            var actor = new User(null, "gr-admin", "gr-admin@example.test",
+                "Group", "Admin", UserType.System)
+            {
+                NormalizedUserName = "GR-ADMIN", NormalizedEmail = "GR-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var systemUser = new User(null, "gr-member", "gr-member@example.test",
+                "Group", "Member", UserType.System)
+            {
+                NormalizedUserName = "GR-MEMBER", NormalizedEmail = "GR-MEMBER@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var tenantUser = new User(foreign.Id, "gr-tenant", "gr-tenant@example.test",
+                "Tenant", "User", UserType.Tenant)
+            {
+                NormalizedUserName = "GR-TENANT", NormalizedEmail = "GR-TENANT@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var superAdmin = new Role(masterId, "superadmin", "Reserved bootstrap role");
+            var operatorRole = new Role(masterId, "operator", "Normal platform role");
+            var foreignRole = new Role(foreign.Id, "tenant-operator", "Foreign role");
+            var adminMembership = new UserRole(masterId, actor.Id, superAdmin.Id);
+            var group = new Group { TenantId = masterId, Name = "Operators", NormalizedName = "OPERATORS" };
+            var actorGroup = new Group { TenantId = masterId, Name = "Self", NormalizedName = "SELF" };
+            var privilegedGroup = new Group { TenantId = masterId, Name = "Privileged", NormalizedName = "PRIVILEGED" };
+            var invalidGroup = new Group { TenantId = masterId, Name = "Mixed", NormalizedName = "MIXED" };
+            var foreignGroup = new Group { TenantId = foreign.Id, Name = "Foreign", NormalizedName = "FOREIGN" };
+            var inactiveGroup = new Group
+            {
+                TenantId = masterId, Name = "Inactive", NormalizedName = "INACTIVE", IsActive = false
+            };
+            setup.AddRange(master, foreign, actor, systemUser, tenantUser,
+                superAdmin, operatorRole, foreignRole, adminMembership,
+                group, actorGroup, privilegedGroup, invalidGroup, foreignGroup, inactiveGroup);
+            setup.UserGroups.AddRange(
+                new UserGroup { TenantId = masterId, UserId = systemUser.Id, GroupId = group.Id },
+                new UserGroup { TenantId = masterId, UserId = actor.Id, GroupId = actorGroup.Id },
+                new UserGroup { TenantId = masterId, UserId = tenantUser.Id, GroupId = invalidGroup.Id });
+            setup.GroupRoles.Add(new GroupRole
+            {
+                TenantId = masterId, GroupId = privilegedGroup.Id, RoleId = superAdmin.Id
+            });
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, isSuperAdmin: true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var gateway = new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
+                NullLogger<AuthorizedPlatformMasterWrite>.Instance);
+            var writer = new PlatformGroupRoleWriteService(guarded, gateway, trusted,
+                NullLogger<PlatformGroupRoleWriteService>.Instance);
+
+            Assert.True(await writer.ChangeAsync(principal, group.Id, operatorRole.Id, true));
+            Assert.False(await writer.ChangeAsync(principal, group.Id, operatorRole.Id, true));
+            var stored = await guarded.GroupRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.GroupId == group.Id).ToListAsync();
+            Assert.Single(stored);
+            Assert.Equal(masterId, stored[0].TenantId);
+            Assert.Equal(operatorRole.Id, stored[0].RoleId);
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+
+            // No actor may attach a SUPERADMIN role to a group or modify an
+            // existing bootstrap privileged group via ordinary REST operations.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, group.Id, superAdmin.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, group.Id, superAdmin.Id, false));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, privilegedGroup.Id, operatorRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, privilegedGroup.Id, operatorRole.Id, false));
+
+            // Group owners cannot grant themselves effective permissions by
+            // modifying a group they belong to.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, actorGroup.Id, operatorRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, actorGroup.Id, operatorRole.Id, false));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, foreignGroup.Id, operatorRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, group.Id, foreignRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, invalidGroup.Id, operatorRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, inactiveGroup.Id, operatorRole.Id, true));
+
+            // The entire SaveChanges is rejected when an unrelated direct
+            // UserRole grant is staged during an otherwise authorized GroupRole
+            // mutation; neither association may persist.
+            guarded.UserRoles.Add(new UserRole(masterId, systemUser.Id, operatorRole.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, group.Id, operatorRole.Id, false));
+            guarded.ChangeTracker.Clear();
+            Assert.Single(await guarded.GroupRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.GroupId == group.Id).ToListAsync());
+            Assert.Empty(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.UserId == systemUser.Id).ToListAsync());
+
+            Assert.True(await writer.ChangeAsync(principal, group.Id, operatorRole.Id, false));
+            Assert.False(await writer.ChangeAsync(principal, group.Id, operatorRole.Id, false));
+            Assert.Empty(await guarded.GroupRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.GroupId == group.Id).ToListAsync());
+
+            // The persisted administrator role is checked for every operation,
+            // irrespective of a still-valid SUPERADMIN claim on an old token.
+            setup.UserRoles.Remove(adminMembership);
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                writer.ChangeAsync(principal, group.Id, operatorRole.Id, true));
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+        });
+    }
+
     private static async Task WithTestDatabaseAsync(
         Func<IdentityDbContext, TenantContext, IdentityDbContext, TrustedTenantWriteScope, Task> test)
     {
