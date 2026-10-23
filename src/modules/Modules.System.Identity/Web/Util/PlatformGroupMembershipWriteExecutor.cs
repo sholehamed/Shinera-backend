@@ -1,3 +1,4 @@
+using System.Data;
 using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -5,6 +6,7 @@ using Modules.System.Identity.Application.Abstractions;
 using Modules.System.Identity.Domain.Entities;
 using Modules.System.Identity.Infrastructure.Persistence;
 using Modules.System.Identity.Infrastructure.Persistence.Interceptors;
+using Modules.System.Identity.Infrastructure.Persistence.Contexts;
 using OpenIddict.Abstractions;
 
 namespace Modules.System.Identity.Web.Util;
@@ -15,7 +17,7 @@ namespace Modules.System.Identity.Web.Util;
 /// </summary>
 public sealed class PlatformGroupMembershipWriteExecutor(
     AuthorizedPlatformMasterWrite gateway,
-    IIdentityDbContext database,
+    IdentityDbContext database,
     TrustedTenantWriteScope trustedWrites,
     ILogger<PlatformGroupMembershipWriteExecutor> logger)
 {
@@ -26,7 +28,22 @@ public sealed class PlatformGroupMembershipWriteExecutor(
         Func<Task> execute,
         CancellationToken cancellationToken = default)
     {
-        using var scope = await gateway.BeginAsync(principal, cancellationToken: cancellationToken);
+        // Authorization, handler changes, and audit commit atomically.
+        var strategy = database.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await database.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken);
+            using var scope = await gateway.BeginAsync(principal, cancellationToken: cancellationToken);
+            await ExecuteInsideTransactionAsync(principal, groupId, userIds, execute, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+        });
+    }
+
+    private async Task ExecuteInsideTransactionAsync(
+        ClaimsPrincipal principal, Guid groupId, IReadOnlyCollection<Guid>? userIds,
+        Func<Task> execute, CancellationToken cancellationToken)
+    {
         var master = DefaultSeedData.MasterTenant.Id;
         var members = userIds?.Distinct().ToArray() ?? [];
 
@@ -73,7 +90,29 @@ public sealed class PlatformGroupMembershipWriteExecutor(
         var actor = principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
         logger.LogWarning("Platform group membership mutation {GroupId} by {ActorId} for {MemberCount} users",
             groupId, actor, members.Length);
+        // Snapshot persisted links rather than requested IDs: no audit for
+        // idempotent requests, and every actual change is accounted for.
+        var before = (await database.UserGroups.AsNoTracking()
+            .Where(x => x.TenantId == master && x.GroupId == groupId)
+            .Select(x => x.UserId).ToListAsync(cancellationToken)).ToHashSet();
+
         await execute();
+
+        var after = (await database.UserGroups.AsNoTracking()
+            .Where(x => x.TenantId == master && x.GroupId == groupId)
+            .Select(x => x.UserId).ToListAsync(cancellationToken)).ToHashSet();
+
+        foreach (var userId in after.Except(before).OrderBy(x => x))
+            await PlatformGrantAuditWriter.RecordAsync(database, actorId,
+                "UserGroup", groupId, userId, "grant",
+                previousGrant: false, currentGrant: true,
+                cancellationToken: cancellationToken);
+        foreach (var userId in before.Except(after).OrderBy(x => x))
+            await PlatformGrantAuditWriter.RecordAsync(database, actorId,
+                "UserGroup", groupId, userId, "revoke",
+                previousGrant: true, currentGrant: false,
+                cancellationToken: cancellationToken);
+
         logger.LogInformation("Platform group membership mutation completed for {GroupId} by {ActorId}",
             groupId, actor);
     }

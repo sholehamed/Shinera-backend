@@ -280,6 +280,15 @@ public sealed class TenantWriteIsolationSqlServerTests
                 .AsNoTracking().SingleAsync(x => x.RoleId == target.Id);
             Assert.Equal(scope, applied.TenantId);
             Assert.Equal(permission.Id, applied.PermissionId);
+            Assert.Equal(1, await CountAuditEventsAsync(guarded, "RolePermission"));
+            Assert.Equal(actor.Id, await AuditActorAsync(guarded, "RolePermission"));
+
+            // A repeated identical role permission request changes no links
+            // and generates no new audit history.
+            await writer.ExecuteAsync(principal, "roles.permissions.replace",
+                async () => await new UpdateRolePermissionsCommandHandler(guarded)
+                    .Handle(command, CancellationToken.None), target.Id);
+            Assert.Equal(1, await CountAuditEventsAsync(guarded, "RolePermission"));
 
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
                 principal, "roles.permissions.replace", () => Task.CompletedTask, otherRole.Id));
@@ -293,6 +302,51 @@ public sealed class TenantWriteIsolationSqlServerTests
 
             Assert.Equal(permission.Id, (await guarded.RolePermissions.IgnoreQueryFilters(["tenant"])
                 .AsNoTracking().SingleAsync(x => x.RoleId == target.Id)).PermissionId);
+            Assert.Equal(1, await CountAuditEventsAsync(guarded, "RolePermission"));
+
+            // Removing the only permission produces one revoke audit entry.
+            command.PermissionIds = [];
+            await writer.ExecuteAsync(principal, "roles.permissions.replace",
+                async () => await new UpdateRolePermissionsCommandHandler(guarded)
+                    .Handle(command, CancellationToken.None), target.Id);
+            Assert.Empty(await guarded.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.RoleId == target.Id).ToListAsync());
+            Assert.Equal(2, await CountAuditEventsAsync(guarded, "RolePermission"));
+
+            // Add again to validate both directions and event counts.
+            command.PermissionIds = [permission.Id];
+            await writer.ExecuteAsync(principal, "roles.permissions.replace",
+                async () => await new UpdateRolePermissionsCommandHandler(guarded)
+                    .Handle(command, CancellationToken.None), target.Id);
+            Assert.Equal(3, await CountAuditEventsAsync(guarded, "RolePermission"));
+
+            // Inject a SQL audit failure after the handler removes the link:
+            // the original grant MUST survive transaction rollback.
+            await setup.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER [dbo].[TR_PlatformGrantAuditEntries_RoleFail]
+                ON [dbo].[PlatformGrantAuditEntries] AFTER INSERT
+                AS
+                BEGIN
+                    THROW 51003, 'Injected RolePermission audit failure', 1;
+                END
+                """);
+            try
+            {
+                command.PermissionIds = [];
+                await Assert.ThrowsAsync<SqlException>(() => writer.ExecuteAsync(
+                    principal, "roles.permissions.replace",
+                    async () => await new UpdateRolePermissionsCommandHandler(guarded)
+                        .Handle(command, CancellationToken.None), target.Id));
+            }
+            finally
+            {
+                await setup.Database.ExecuteSqlRawAsync(
+                    "DROP TRIGGER IF EXISTS [dbo].[TR_PlatformGrantAuditEntries_RoleFail]");
+                guarded.ChangeTracker.Clear();
+            }
+            Assert.Equal(permission.Id, (await guarded.RolePermissions.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().SingleAsync(x => x.RoleId == target.Id)).PermissionId);
+            Assert.Equal(3, await CountAuditEventsAsync(guarded, "RolePermission"));
             Assert.False(trusted.AllowsPlatformTenant(scope));
         });
     }
@@ -511,6 +565,8 @@ public sealed class TenantWriteIsolationSqlServerTests
             Assert.Single(stored);
             Assert.Equal(masterId, stored[0].TenantId);
             Assert.Equal(member.Id, stored[0].UserId);
+            Assert.Equal(1, await CountAuditEventsAsync(guard, "UserGroup"));
+            Assert.Equal(actor.Id, await AuditActorAsync(guard, "UserGroup"));
 
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
                 AddMember(foreignGroup.Id, member.Id));
@@ -518,6 +574,42 @@ public sealed class TenantWriteIsolationSqlServerTests
                 AddMember(ordinaryGroup.Id, tenantUser.Id));
             await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
                 AddMember(privilegedGroup.Id, member.Id));
+            Assert.Equal(1, await CountAuditEventsAsync(guard, "UserGroup"));
+
+            // A forced audit failure must roll back any new membership added
+            // earlier in the same transaction.
+            var secondMember = new User(null, "group-member-2", "group-member2@example.test",
+                "Group", "Second", UserType.System)
+            {
+                NormalizedUserName = "GROUP-MEMBER-2",
+                NormalizedEmail = "GROUP-MEMBER2@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only-stamp"
+            };
+            setup.Users.Add(secondMember);
+            await setup.SaveChangesAsync();
+            await setup.Database.ExecuteSqlRawAsync("""
+                CREATE TRIGGER [dbo].[TR_PlatformGrantAuditEntries_GroupFail]
+                ON [dbo].[PlatformGrantAuditEntries] AFTER INSERT
+                AS
+                BEGIN
+                    THROW 51004, 'Injected UserGroup audit failure', 1;
+                END
+                """);
+            try
+            {
+                await Assert.ThrowsAsync<SqlException>(() =>
+                    AddMember(ordinaryGroup.Id, secondMember.Id));
+            }
+            finally
+            {
+                await setup.Database.ExecuteSqlRawAsync(
+                    "DROP TRIGGER IF EXISTS [dbo].[TR_PlatformGrantAuditEntries_GroupFail]");
+                guard.ChangeTracker.Clear();
+            }
+            Assert.False(await guard.UserGroups.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().AnyAsync(x => x.UserId == secondMember.Id &&
+                    x.GroupId == ordinaryGroup.Id));
+            Assert.Equal(1, await CountAuditEventsAsync(guard, "UserGroup"));
             Assert.False(tenant.IsFilterDisabled);
             Assert.False(trusted.AllowsPlatformTenant(masterId));
 

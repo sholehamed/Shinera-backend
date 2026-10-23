@@ -59,16 +59,21 @@ namespace Modules.System.Identity.Application.Features.Roles.Commands
                 .Where(rolePermission => rolePermission.RoleId == request.RoleId && rolePermission.TenantId == request.StorageTenantId)
                 .ToListAsync(cancellationToken);
 
-            _context.RolePermissions.RemoveRange(existingRolePermissions);
+            // Compute real set differences. Rewriting identical links creates
+            // unnecessary SQL churn and makes audit semantics misleading.
+            var requested = validPermissionIds.ToHashSet();
+            var present = existingRolePermissions.Select(x => x.PermissionId).ToHashSet();
 
-            var newRolePermissions = validPermissionIds.Select(permissionId =>
+            _context.RolePermissions.RemoveRange(
+                existingRolePermissions.Where(x => !requested.Contains(x.PermissionId)));
+
+            var newlyGranted = requested.Except(present).Select(permissionId =>
                 new RolePermission(request.StorageTenantId, request.RoleId!.Value, permissionId));
 
-            await _context.RolePermissions.AddRangeAsync(
-                newRolePermissions,
-                cancellationToken);
+            await _context.RolePermissions.AddRangeAsync(newlyGranted, cancellationToken);
 
-            await _context.SaveChangesAsync(cancellationToken);
+            if (!requested.SetEquals(present))
+                await _context.SaveChangesAsync(cancellationToken);
         }
     }
 
