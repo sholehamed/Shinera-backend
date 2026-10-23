@@ -1,6 +1,7 @@
 ﻿using Modules.System.Identity.Application.Features.Tenants.Commands;
 using Modules.System.Identity.Application.Features.Users.Commands;
 using Modules.System.Identity.Application.Features.Users.Queries;
+using Modules.System.Identity.Web.Util;
 
 
 namespace Modules.System.Identity.Web.Endpoints;
@@ -19,8 +20,36 @@ public class Users : EndpointGroupBase
             .MapDelete(UserDelete, "{id}")
             .MapPatch(UserChangeState, "{id}")
             .MapPatch(UserChangeLockState, "{id}/changeLock")
+            .MapPut(GrantPlatformUserRole, "{id:guid}/roles/{roleId:guid}")
+            .MapDelete(RevokePlatformUserRole, "{id:guid}/roles/{roleId:guid}")
 
         ;
+    }
+
+    // Both routes inherit SystemAdministrator and the service independently
+    // revalidates the live actor/target state before changing a grant.
+    public async Task<Results<NoContent, ForbidHttpResult>> GrantPlatformUserRole(
+        PlatformUserRoleWriteService grants, HttpContext http, Guid id,
+        Guid roleId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await grants.ChangeAsync(http.User, id, roleId, assign: true, cancellationToken: cancellationToken);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
+    }
+
+    public async Task<Results<NoContent, ForbidHttpResult>> RevokePlatformUserRole(
+        PlatformUserRoleWriteService grants, HttpContext http, Guid id,
+        Guid roleId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await grants.ChangeAsync(http.User, id, roleId, assign: false, cancellationToken: cancellationToken);
+            return TypedResults.NoContent();
+        }
+        catch (UnauthorizedAccessException) { return TypedResults.Forbid(); }
     }
 
     public async Task UserDelete(IDispatcher sender, Guid id)

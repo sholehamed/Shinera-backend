@@ -645,6 +645,119 @@ public sealed class TenantWriteIsolationSqlServerTests
         });
     }
 
+
+    [Fact]
+    public async Task Direct_platform_user_role_grants_are_scoped_idempotent_and_revocable()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guarded, trusted) =>
+        {
+            var masterId = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(masterId, null, "Platform", "direct-grant-master", "localhost");
+            var foreign = new Tenant(null, "Tenant", "direct-grant-tenant", "localhost");
+            var admin = new User(null, "direct-admin", "direct-admin@example.test",
+                "Direct", "Admin", UserType.System)
+            {
+                NormalizedUserName = "DIRECT-ADMIN", NormalizedEmail = "DIRECT-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var systemUser = new User(null, "direct-user", "direct-user@example.test",
+                "Direct", "User", UserType.System)
+            {
+                NormalizedUserName = "DIRECT-USER", NormalizedEmail = "DIRECT-USER@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var tenantUser = new User(foreign.Id, "direct-tenant", "direct-tenant@example.test",
+                "Tenant", "User", UserType.Tenant)
+            {
+                NormalizedUserName = "DIRECT-TENANT", NormalizedEmail = "DIRECT-TENANT@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only"
+            };
+            var superAdmin = new Role(masterId, "superadmin", "Bootstrap role");
+            var operatorRole = new Role(masterId, "operator", "Nonprivileged role");
+            var foreignRole = new Role(foreign.Id, "foreign-role", "Foreign role");
+            var adminMembership = new UserRole(masterId, admin.Id, superAdmin.Id);
+            setup.AddRange(master, foreign, admin, systemUser, tenantUser,
+                superAdmin, operatorRole, foreignRole, adminMembership);
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(admin.Id, isSuperAdmin: true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, admin.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var gateway = new AuthorizedPlatformMasterWrite(guarded, tenant, trusted,
+                NullLogger<AuthorizedPlatformMasterWrite>.Instance);
+            var service = new PlatformUserRoleWriteService(guarded, gateway, trusted,
+                NullLogger<PlatformUserRoleWriteService>.Instance);
+
+            // Indefinite lockout is not a valid target for a new grant.
+            systemUser.IsLockedOut = true;
+            systemUser.LockoutEndUtc = null;
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
+            systemUser.IsLockedOut = false;
+            await setup.SaveChangesAsync();
+
+            // Unrelated tracked role-grants cannot piggyback on the allowed
+            // UserRole mutation or be committed as part of the same SaveChanges.
+            var group = new Group
+            {
+                TenantId = masterId, Name = "Reviewers", NormalizedName = "REVIEWERS"
+            };
+            setup.Groups.Add(group);
+            await setup.SaveChangesAsync();
+            guarded.GroupRoles.Add(new GroupRole
+            {
+                TenantId = masterId, GroupId = group.Id, RoleId = operatorRole.Id
+            });
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
+            guarded.ChangeTracker.Clear();
+            Assert.Empty(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.UserId == systemUser.Id).ToListAsync());
+
+            Assert.True(await service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
+            Assert.False(await service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
+            Assert.Single(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.UserId == systemUser.Id).ToListAsync());
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+
+            // Explicitly disallow self-grants, privilege escalation,
+            // tenant-user targets and roles from a foreign storage tenant.
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, admin.Id, operatorRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, superAdmin.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, tenantUser.Id, operatorRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, foreignRole.Id, true));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, foreignRole.Id, false));
+
+            // No denied request can silently remove a previously valid grant.
+            Assert.Single(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.UserId == systemUser.Id).ToListAsync());
+
+            Assert.True(await service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, false));
+            Assert.False(await service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, false));
+            Assert.Empty(await guarded.UserRoles.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.UserId == systemUser.Id).ToListAsync());
+
+            // Admin authorization is rechecked on the live database for every
+            // grant; a stale JWT cannot keep granting after role revocation.
+            setup.UserRoles.Remove(adminMembership);
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                service.ChangeAsync(principal, systemUser.Id, operatorRole.Id, true));
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+        });
+    }
+
     private static async Task WithTestDatabaseAsync(
         Func<IdentityDbContext, TenantContext, IdentityDbContext, TrustedTenantWriteScope, Task> test)
     {

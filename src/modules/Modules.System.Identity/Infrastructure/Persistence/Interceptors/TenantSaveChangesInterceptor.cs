@@ -54,6 +54,17 @@ public sealed class TenantSaveChangesInterceptor(
             {
                 // Master-scoped authority alone must never allow direct grant
                 // escalation. Explicit grant intents are bound to one target.
+                // Assignment links are created or removed, never silently
+                // rewritten to a different user, role, group or permission.
+                if (entry.State == EntityState.Modified &&
+                    entry.Entity is Modules.System.Identity.Domain.Entities.UserRole
+                        or Modules.System.Identity.Domain.Entities.GroupRole
+                        or Modules.System.Identity.Domain.Entities.UserPermission
+                        or Modules.System.Identity.Domain.Entities.UserGroup
+                        or Modules.System.Identity.Domain.Entities.RolePermission)
+                    throw new UnauthorizedAccessException(
+                        "Platform grant reassignment is forbidden; revoke and assign instead.");
+
                 if (!trustedWrites.AllowsPlatformGrantMutation(entry.Entity))
                     throw new UnauthorizedAccessException(
                         "Platform grant mutation requires a verified operation and matching target.");
