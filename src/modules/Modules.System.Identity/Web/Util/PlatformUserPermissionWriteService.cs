@@ -113,6 +113,16 @@ public sealed class PlatformUserPermissionWriteService(
                 await database.SaveChangesAsync(cancellationToken);
             }
 
+            // The audit INSERT is in the same transaction as both rows when
+            // an Allow <-> Deny replacement requires two SaveChanges calls.
+            // Failure here rolls back all grant changes.
+            await PlatformGrantAuditWriter.RecordAsync(database, actorId,
+                "UserPermission", targetUserId, permissionId,
+                isGranted switch { true => "allow", false => "deny", null => "clear" },
+                previousGrant: existing?.IsGranted,
+                currentGrant: isGranted,
+                cancellationToken: cancellationToken);
+
             await transaction.CommitAsync(cancellationToken);
             logger.LogWarning(
                 "Platform UserPermission {Action}: actor {ActorId}, subject {UserId}, permission {PermissionId}",
