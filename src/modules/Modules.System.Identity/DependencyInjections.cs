@@ -2,7 +2,6 @@
 using Infrastructure.SharedKernel;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Authorization.Policy;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -51,11 +50,8 @@ namespace Modules.System.Identity
             services.AddScoped<CaptchaService>();
             services.AddScoped<RefreshGrantValidator>();
             services.AddScoped<IAuthorizationHandler, ActiveSystemAdministratorHandler>();
-            // Persist failed privileged HTTP authorization decisions independently
-            // from the grant mutation transaction; other policies use default behavior.
+            // Scoped append-only writer, independent of the rejected grant transaction.
             services.AddScoped<PlatformAccessDenialAudit>();
-            services.AddScoped<IAuthorizationMiddlewareResultHandler,
-                AuditedPlatformAuthorizationResultHandler>();
             services.AddScoped<IAuthorizationHandler, TenantPermissionHandler>();
             services.AddScoped<IAuthorizationHandler, SystemPermissionHandler>();
             services.AddScoped<IIdentityDbContext>(provider =>
@@ -138,6 +134,8 @@ namespace Modules.System.Identity
             var assembly = typeof(IdentityDbContext).Assembly;
 
             app.UseAuthentication();
+            // Before authorization, also observes endpoint-level Forbid() responses.
+            app.UseMiddleware<PlatformDeniedAccessAuditMiddleware>();
             app.UseAuthorization();
             DbSeeder.SeedAsync(app.Services).Wait();
             //app.UseMiddleware<PermissionMiddleware>();
