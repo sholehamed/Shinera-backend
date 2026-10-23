@@ -156,7 +156,7 @@ jobs:
           # the process afterwards. Do not move this into a later job step.
           # Uses only disposable Development/E2E seed identities, real
           # OpenIddict tokens and the same SQL Server container.
-          python3 tests/http/platform_authorization_e2e.py
+          python3 tests/http/platform_authorization_e2e.py || { tail -n 25 /tmp/shinera-api.log; exit 1; }
 
       - name: Upload SQL Server test results
         if: always()
