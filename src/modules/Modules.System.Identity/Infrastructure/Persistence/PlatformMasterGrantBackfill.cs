@@ -133,6 +133,27 @@ public static class PlatformMasterGrantBackfill
             {
                 if (rollback)
                 {
+                    // A matching row and CreatedBy alone do not prove that a
+                    // backfill was ever committed. Require its append-only
+                    // grant audit evidence before attempting a compensating
+                    // revoke. This is still NOT a cryptographic batch receipt:
+                    // the legacy ledger does not store RolePermission.Id.
+                    var priorAudit = await db.Database.SqlQuery<long>($"""
+                        SELECT COUNT_BIG(*) AS [Value]
+                        FROM [dbo].[PlatformGrantAuditEntries]
+                        WHERE [TenantId] = {master}
+                          AND [ActorUserId] = {manifest.ActorUserId}
+                          AND [Kind] = {"RolePermission"}
+                          AND [TargetId] = {manifest.RoleId}
+                          AND [RelatedId] = {grant.PermissionId}
+                          AND [Action] = {"grant"}
+                          AND [PreviousGrant] = {false}
+                          AND [CurrentGrant] = {true}
+                        """).SingleAsync(ct);
+                    if (priorAudit < 1)
+                        throw new InvalidOperationException(
+                            "Matching committed grant audit is missing; rollback denied.");
+
                     var removed = await db.Database.ExecuteSqlInterpolatedAsync($"""
                         DELETE FROM [dbo].[RolePermissions]
                         WHERE [Id] = {grant.AssignmentId}
