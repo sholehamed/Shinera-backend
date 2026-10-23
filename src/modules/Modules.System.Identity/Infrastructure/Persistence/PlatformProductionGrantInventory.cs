@@ -19,6 +19,10 @@ public static class PlatformProductionGrantInventory
         int ActiveMasterSuperAdminAssignments,
         int SystemUsersWithTenantId,
         int InvalidMasterUserRoleAssignments,
+        int InvalidMasterRolePermissionAssignments,
+        int InvalidMasterGroupRoleAssignments,
+        int InvalidMasterUserGroupAssignments,
+        int InvalidMasterUserPermissionAssignments,
         int MasterCatalogUserDenials,
         IReadOnlyList<string> MissingCatalogCodes,
         IReadOnlyList<string> InactiveCatalogCodes,
@@ -32,6 +36,10 @@ public static class PlatformProductionGrantInventory
             SuperAdminRoleCount != 1 || ActiveSuperAdminRoleCount != 1 ||
             ActiveMasterSuperAdminAssignments < 1 ||
             SystemUsersWithTenantId != 0 || InvalidMasterUserRoleAssignments != 0 ||
+            InvalidMasterRolePermissionAssignments != 0 ||
+            InvalidMasterGroupRoleAssignments != 0 ||
+            InvalidMasterUserGroupAssignments != 0 ||
+            InvalidMasterUserPermissionAssignments != 0 ||
             MasterCatalogUserDenials != 0 ||
             MissingCatalogCodes.Count != 0 || InactiveCatalogCodes.Count != 0 ||
             DuplicateCatalogCodes.Count != 0 ||
@@ -70,6 +78,26 @@ public static class PlatformProductionGrantInventory
             .CountAsync(x => x.TenantId == master &&
                 (x.Role.TenantId != master || x.User.UserTpe != UserType.System ||
                  x.User.TenantId != null), ct);
+
+        // All four Master-scoped relationship tables must connect to a
+        // compatible Master Role/Group or a TenantId-null System user. SQL
+        // foreign keys do NOT validate cross-Tenant scope compatibility.
+        var invalidRolePermissions = await db.RolePermissions
+            .IgnoreQueryFilters(["tenant"]).AsNoTracking()
+            .CountAsync(x => x.TenantId == master && x.Role.TenantId != master, ct);
+        var invalidGroupRoles = await db.GroupRoles
+            .IgnoreQueryFilters(["tenant"]).AsNoTracking()
+            .CountAsync(x => x.TenantId == master &&
+                (x.Role!.TenantId != master || x.Group!.TenantId != master), ct);
+        var invalidUserGroups = await db.UserGroups
+            .IgnoreQueryFilters(["tenant"]).AsNoTracking()
+            .CountAsync(x => x.TenantId == master &&
+                (x.Group.TenantId != master || x.User.UserTpe != UserType.System ||
+                 x.User.TenantId != null), ct);
+        var invalidUserPermissions = await db.UserPermissions
+            .IgnoreQueryFilters(["tenant"]).AsNoTracking()
+            .CountAsync(x => x.TenantId == master &&
+                (x.User.UserTpe != UserType.System || x.User.TenantId != null), ct);
 
         var tenantBoundSystemUsers = await db.Users.AsNoTracking()
             .CountAsync(x => x.UserTpe == UserType.System &&
@@ -111,7 +139,9 @@ public static class PlatformProductionGrantInventory
                  x.Permission.Code.StartsWith("PERMISSIONS.")), ct);
 
         return new Snapshot(masterActive, roles.Count, activeRoles.Length,
-            assignments, tenantBoundSystemUsers, invalidAssignments, denials,
+            assignments, tenantBoundSystemUsers, invalidAssignments,
+            invalidRolePermissions, invalidGroupRoles, invalidUserGroups,
+            invalidUserPermissions, denials,
             missing, inactive, duplicates, ungranted);
     }
 }
