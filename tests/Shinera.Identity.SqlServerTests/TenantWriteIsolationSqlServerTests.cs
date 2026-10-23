@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Modules.System.Identity.Web.Util;
 using Modules.System.Identity.Application.Features.Roles.Commands;
+using Modules.System.Identity.Application.Features.Groups.Commands;
 using OpenIddict.Abstractions;
 using System.Security.Claims;
 using Modules.System.Identity.Application.Services;
@@ -436,6 +437,95 @@ public sealed class TenantWriteIsolationSqlServerTests
                 principal, "permissions.delete", () => Task.CompletedTask,
                 permissionId: custom.Id));
             Assert.False(tenant.IsFilterDisabled);
+        });
+    }
+
+    [Fact]
+    public async Task Platform_group_membership_requires_live_admin_and_master_scoped_system_users()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guard, trusted) =>
+        {
+            var masterId = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(masterId, null, "Platform", "group-members-master", "localhost");
+            var foreign = new Tenant(null, "Tenant", "group-members-foreign", "localhost");
+            var actor = new User(null, "group-admin", "group-admin@example.test",
+                "Group", "Admin", UserType.System)
+            {
+                NormalizedUserName = "GROUP-ADMIN",
+                NormalizedEmail = "GROUP-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only-stamp"
+            };
+            var member = new User(null, "group-member", "group-member@example.test",
+                "Group", "Member", UserType.System)
+            {
+                NormalizedUserName = "GROUP-MEMBER",
+                NormalizedEmail = "GROUP-MEMBER@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only-stamp"
+            };
+            var tenantUser = new User(foreign.Id, "tenant-member", "tenant-member@example.test",
+                "Tenant", "Member", UserType.Tenant)
+            {
+                NormalizedUserName = "TENANT-MEMBER",
+                NormalizedEmail = "TENANT-MEMBER@EXAMPLE.TEST",
+                PasswordHash = "test-only", SecurityStamp = "test-only-stamp"
+            };
+            var superAdmin = new Role(masterId, "superadmin", "Privileged System role");
+            var adminMembership = new UserRole(masterId, actor.Id, superAdmin.Id);
+            var ordinaryGroup = new Group { TenantId = masterId, Name = "Operators", NormalizedName = "OPERATORS" };
+            var privilegedGroup = new Group { TenantId = masterId, Name = "Administrators", NormalizedName = "ADMINISTRATORS" };
+            var foreignGroup = new Group { TenantId = foreign.Id, Name = "Foreign", NormalizedName = "FOREIGN" };
+            var privilegedLink = new GroupRole
+            {
+                TenantId = masterId, GroupId = privilegedGroup.Id, RoleId = superAdmin.Id
+            };
+            setup.AddRange(master, foreign, actor, member, tenantUser, superAdmin,
+                adminMembership, ordinaryGroup, privilegedGroup, foreignGroup, privilegedLink);
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, isSuperAdmin: true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var writer = new PlatformGroupMembershipWriteExecutor(
+                new AuthorizedPlatformMasterWrite(guard, tenant, trusted,
+                    NullLogger<AuthorizedPlatformMasterWrite>.Instance),
+                guard, NullLogger<PlatformGroupMembershipWriteExecutor>.Instance);
+
+            async Task AddMember(Guid groupId, Guid userId)
+            {
+                var command = new AddGroupMembersCommand
+                {
+                    StorageTenantId = masterId, GroupId = groupId, UserIds = [userId]
+                };
+                await writer.ExecuteAsync(principal, groupId, command.UserIds,
+                    async () => await new AddGroupMembersCommandHandler(guard)
+                        .Handle(command, CancellationToken.None));
+            }
+
+            await AddMember(ordinaryGroup.Id, member.Id);
+            await AddMember(ordinaryGroup.Id, member.Id); // idempotent
+            var stored = await guard.UserGroups.IgnoreQueryFilters(["tenant"])
+                .AsNoTracking().Where(x => x.GroupId == ordinaryGroup.Id).ToListAsync();
+            Assert.Single(stored);
+            Assert.Equal(masterId, stored[0].TenantId);
+            Assert.Equal(member.Id, stored[0].UserId);
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                AddMember(foreignGroup.Id, member.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                AddMember(ordinaryGroup.Id, tenantUser.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                AddMember(privilegedGroup.Id, member.Id));
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+
+            setup.UserRoles.Remove(adminMembership);
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+                AddMember(ordinaryGroup.Id, actor.Id));
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
         });
     }
 
