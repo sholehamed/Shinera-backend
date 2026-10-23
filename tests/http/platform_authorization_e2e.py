@@ -121,13 +121,30 @@ def run():
     check("POST", roles, 403, token=tenant, data=role_payload)
     check("GET", roles + "/lookup", 403, token=tenant,
           headers={"X-Tenant-Id": FOREIGN_ID})
-    check("GET", roles + "/lookup", 200, token=admin)
-    check("GET", perms + "/lookup?text=ROLES.CREATE", 200, token=admin)
+    role_lookup = json_value(check("GET", roles + "/lookup", 200, token=admin))
+    reserved_roles = [r for r in role_lookup
+                      if r.get("title", "").casefold() == "superadmin"]
+    assert len(reserved_roles) == 1, "Master System role lookup must return exactly one SuperAdmin"
+    superadmin_role_id = str(uuid.UUID(reserved_roles[0]["id"]))
+
+    permission_lookup = json_value(
+        check("GET", perms + "/lookup?text=ROLES.CREATE", 200, token=admin))
+    reserved_permissions = [p for p in permission_lookup
+                            if p.get("code", "").upper() == "ROLES.CREATE"]
+    assert len(reserved_permissions) == 1, "Reserved platform permission missing"
+    reserved_permission_id = str(uuid.UUID(reserved_permissions[0]["id"]))
 
     # Forged caller target must be rejected, not silently rewritten or
     # mapped to HTTP 500. No untrusted tenant body can select Master storage.
     check("PUT", roles + "/" + FOREIGN_ID + "/permissions", 403,
           token=admin, data={"permissionIds": []})
+    check("PUT", roles + "/" + superadmin_role_id + "/permissions", 403,
+          token=admin, data={"permissionIds": []})
+    check("DELETE", roles + "/" + superadmin_role_id, 403, token=admin)
+    check("PUT", users + "/" + viewer_id + "/roles/" + superadmin_role_id,
+          403, token=admin)
+    check("PUT", users + "/" + viewer_id + "/permissions/" + reserved_permission_id + "/allow",
+          403, token=admin)
     check("POST", perms, 403, token=admin,
           data={"code": "ROLES.CREATE", "name": "Forbidden catalog overwrite",
                 "resourceId": FOREIGN_ID, "isActive": True,
@@ -182,6 +199,9 @@ def run():
 
     # The privileged actor cannot modify their own grants via a normal API.
     check("PUT", users + "/" + admin_id + "/roles/" + role_id, 403, token=admin)
+
+    # Finish actual platform Role CRUD after related grant links are removed.
+    check("DELETE", roles + "/" + role_id, 204, token=admin)
 
     print(f"PASS: {PASSED} real HTTP status checks, plus persisted Role invariants", flush=True)
 
