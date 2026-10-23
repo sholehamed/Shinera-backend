@@ -1,23 +1,22 @@
-using System.Security.Claims;
 using System.Data;
+using System.Security.Claims;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
-using Modules.System.Identity.Application.Abstractions;
 using Modules.System.Identity.Domain.Entities;
 using Modules.System.Identity.Infrastructure.Persistence;
+using Modules.System.Identity.Infrastructure.Persistence.Contexts;
 using Modules.System.Identity.Infrastructure.Persistence.Interceptors;
 using OpenIddict.Abstractions;
 
 namespace Modules.System.Identity.Web.Util;
 
 /// <summary>
-/// Limits System group member grants to active master-scoped groups and active
-/// System users. SuperAdmin membership is reserved for reviewed bootstrap.
+/// Restricts System group membership to validated Master groups and active
+/// System members, and writes membership audit in the same SQL transaction.
 /// </summary>
 public sealed class PlatformGroupMembershipWriteExecutor(
     AuthorizedPlatformMasterWrite gateway,
-    IIdentityDbContext database,
-    Modules.System.Identity.Infrastructure.Persistence.Contexts.IdentityDbContext auditDatabase,
+    IdentityDbContext database,
     TrustedTenantWriteScope trustedWrites,
     ILogger<PlatformGroupMembershipWriteExecutor> logger)
 {
@@ -28,70 +27,74 @@ public sealed class PlatformGroupMembershipWriteExecutor(
         Func<Task> execute,
         CancellationToken cancellationToken = default)
     {
-        using var scope = await gateway.BeginAsync(principal, cancellationToken: cancellationToken);
-        var master = DefaultSeedData.MasterTenant.Id;
         var members = userIds?.Distinct().ToArray() ?? [];
-
         if (groupId == Guid.Empty || members.Length == 0 ||
-            members.Any(id => id == Guid.Empty))
-            throw new UnauthorizedAccessException("A valid group and member list is required.");
-
-        // Prevent a two-step self-grant: an administrator must not be able
-        // to assign a role to a group and then join that group themselves.
-        // This also rejects idempotent/self-including batches.
-        if (!Guid.TryParse(principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value,
+            members.Any(id => id == Guid.Empty) ||
+            !Guid.TryParse(principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value,
                 out var actorId) || members.Contains(actorId))
             throw new UnauthorizedAccessException(
-                "Platform administrators cannot add themselves to a group.");
+                "Invalid membership list or platform administrator self-membership.");
 
-        var groupIsValid = await database.Groups.AsNoTracking()
-            .AnyAsync(g => g.Id == groupId && g.TenantId == master && g.IsActive, cancellationToken);
-        if (!groupIsValid)
-            throw new UnauthorizedAccessException("Group is outside the active platform master scope.");
-
-        var isPrivilegedGroup = await database.GroupRoles.AsNoTracking()
-            .AnyAsync(link => link.GroupId == groupId &&
-                              link.TenantId == master &&
-                              link.Role != null &&
-                              link.Role.TenantId == master &&
-                              link.Role.NormalizedName == "SUPERADMIN", cancellationToken);
-        if (isPrivilegedGroup)
-            throw new UnauthorizedAccessException("SuperAdmin group membership requires a reviewed bootstrap.");
-
-        var validMembers = await database.Users.AsNoTracking()
-            .CountAsync(user => members.Contains(user.Id) &&
-                                user.UserTpe == UserType.System &&
-                                user.TenantId == null && user.IsActive &&
-                                (!user.IsLockedOut || user.LockoutEndUtc <= DateTime.UtcNow),
-                cancellationToken);
-        if (validMembers != members.Length)
-            throw new UnauthorizedAccessException("Only active System accounts may join platform groups.");
-
-        // This scope permits only UserGroup mutations for the validated group,
-        // not UserRole/GroupRole/UserPermission or unrelated groups.
-        using var grant = trustedWrites.BeginPlatformGrantMutation(
-            PlatformGrantMutationKind.GroupMembers, groupId);
-
-        var actor = principal.FindFirst(OpenIddictConstants.Claims.Subject)?.Value;
-        logger.LogWarning("Platform group membership mutation {GroupId} by {ActorId} for {MemberCount} users",
-            groupId, actor, members.Length);
-        // Legacy command SaveChanges runs inside the same SQL transaction as
-        // all member audit inserts. Any failed insert rolls the batch back.
-        await using var transaction = await auditDatabase.Database.BeginTransactionAsync(
-            IsolationLevel.Serializable, cancellationToken);
-        var existing = await database.UserGroups.AsNoTracking()
-            .Where(x => x.TenantId == master && x.GroupId == groupId &&
-                        members.Contains(x.UserId))
-            .Select(x => x.UserId).ToListAsync(cancellationToken);
-        var additions = members.Except(existing).ToArray();
-        await execute();
-        foreach (var memberId in additions)
-            await PlatformGrantAuditWriter.RecordAsync(auditDatabase, actorId,
-                "UserGroup", groupId, memberId, "grant",
-                previousGrant: false, currentGrant: true,
+        // Live administrator, target and membership checks MUST run in the same
+        // serializable transaction as the legacy command and audit inserts.
+        // SQL Server's retry strategy needs to wrap the whole unit, not only SaveChanges.
+        var strategy = database.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
+        {
+            await using var transaction = await database.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable, cancellationToken);
+            using var scope = await gateway.BeginAsync(principal,
                 cancellationToken: cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-        logger.LogInformation("Platform group membership mutation completed for {GroupId} by {ActorId}",
-            groupId, actor);
+            var master = DefaultSeedData.MasterTenant.Id;
+
+            var groupIsValid = await database.Groups.AsNoTracking()
+                .AnyAsync(g => g.Id == groupId && g.TenantId == master && g.IsActive,
+                    cancellationToken);
+            if (!groupIsValid)
+                throw new UnauthorizedAccessException(
+                    "Group is outside the active platform master scope.");
+
+            var isPrivilegedGroup = await database.GroupRoles.AsNoTracking()
+                .AnyAsync(link => link.GroupId == groupId &&
+                    link.TenantId == master && link.Role != null &&
+                    link.Role.TenantId == master &&
+                    link.Role.NormalizedName == "SUPERADMIN", cancellationToken);
+            if (isPrivilegedGroup)
+                throw new UnauthorizedAccessException(
+                    "SuperAdmin group membership requires a reviewed bootstrap.");
+
+            var validMembers = await database.Users.AsNoTracking().CountAsync(user =>
+                members.Contains(user.Id) &&
+                user.UserTpe == UserType.System &&
+                user.TenantId == null && user.IsActive &&
+                (!user.IsLockedOut || user.LockoutEndUtc <= DateTime.UtcNow),
+                cancellationToken);
+            if (validMembers != members.Length)
+                throw new UnauthorizedAccessException(
+                    "Only active System accounts may join platform groups.");
+
+            using var grant = trustedWrites.BeginPlatformGrantMutation(
+                PlatformGrantMutationKind.GroupMembers, groupId);
+
+            var existing = await database.UserGroups.AsNoTracking()
+                .Where(x => x.TenantId == master && x.GroupId == groupId &&
+                            members.Contains(x.UserId))
+                .Select(x => x.UserId).ToListAsync(cancellationToken);
+            var additions = members.Except(existing).ToArray();
+
+            // Legacy handler and audit writer share the exact same scoped DbContext.
+            // A failed INSERT rolls back the entire membership batch.
+            await execute();
+            foreach (var memberId in additions)
+                await PlatformGrantAuditWriter.RecordAsync(database, actorId,
+                    "UserGroup", groupId, memberId, "grant",
+                    previousGrant: false, currentGrant: true,
+                    cancellationToken: cancellationToken);
+
+            await transaction.CommitAsync(cancellationToken);
+            logger.LogWarning(
+                "Audited platform group membership: actor {ActorId}, group {GroupId}, new members {Count}",
+                actorId, groupId, additions.Length);
+        });
     }
 }
