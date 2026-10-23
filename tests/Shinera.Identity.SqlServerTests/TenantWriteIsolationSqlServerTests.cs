@@ -341,6 +341,80 @@ public sealed class TenantWriteIsolationSqlServerTests
         });
     }
 
+
+    [Fact]
+    public async Task Permission_mutations_protect_platform_catalog_and_recheck_live_admin()
+    {
+        await WithTestDatabaseAsync(async (setup, tenant, guard, trusted) =>
+        {
+            var masterId = DefaultSeedData.MasterTenant.Id;
+            var master = new Tenant(masterId, null, "Platform", "permission-guard-master", "localhost");
+            var actor = new User(null, "permission-guard-admin", "permission-guard-admin@example.test",
+                "Permission", "Admin", UserType.System)
+            {
+                NormalizedUserName = "PERMISSION-GUARD-ADMIN",
+                NormalizedEmail = "PERMISSION-GUARD-ADMIN@EXAMPLE.TEST",
+                PasswordHash = "test-only",
+                SecurityStamp = "test-security-stamp"
+            };
+            var role = new Role(masterId, "superadmin", "Master operator");
+            var membership = new UserRole(masterId, actor.Id, role.Id);
+            var reserved = new Permission { Code = "ROLES.CREATE", Name = "System create Role" };
+            var custom = new Permission { Code = "SERVICES.VIEW", Name = "Custom service view" };
+            setup.AddRange(master, actor, role, membership, reserved, custom);
+            await setup.SaveChangesAsync();
+
+            tenant.InitializeSystem(actor.Id, isSuperAdmin: true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([
+                new Claim(OpenIddictConstants.Claims.Subject, actor.Id.ToString()),
+                new Claim("account_type", "system"),
+                new Claim(OpenIddictConstants.Claims.Role, "superadmin")
+            ], "test"));
+            var gateway = new AuthorizedPlatformMasterWrite(guard, tenant, trusted,
+                NullLogger<AuthorizedPlatformMasterWrite>.Instance);
+            var writer = new PlatformPermissionWriteExecutor(gateway, guard,
+                NullLogger<PlatformPermissionWriteExecutor>.Instance);
+
+            var updated = await writer.ExecuteAsync(principal, "permissions.update", async () =>
+            {
+                var entry = await guard.Permissions.SingleAsync(x => x.Id == custom.Id);
+                entry.Description = "Edited by verified platform operation";
+                await guard.SaveChangesAsync();
+                return entry.Id;
+            }, permissionId: custom.Id);
+            Assert.Equal(custom.Id, updated);
+            Assert.False(tenant.IsFilterDisabled);
+            Assert.False(trusted.AllowsPlatformTenant(masterId));
+
+            // Catalog entries cannot be created, renamed, deleted or deactivated
+            // through the general-purpose HTTP/CQRS administrative command path.
+            var ran = false;
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "permissions.create",
+                () => { ran = true; return Task.CompletedTask; },
+                newCode: " roles.create "));
+            Assert.False(ran);
+
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "permissions.update", () => Task.CompletedTask,
+                newCode: "SERVICES.VIEW", permissionId: reserved.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "permissions.update", () => Task.CompletedTask,
+                newCode: "permissions.delete", permissionId: custom.Id));
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "permissions.change-state", () => Task.CompletedTask,
+                permissionId: reserved.Id));
+            Assert.False(tenant.IsFilterDisabled);
+
+            setup.UserRoles.Remove(membership);
+            await setup.SaveChangesAsync();
+            await Assert.ThrowsAsync<UnauthorizedAccessException>(() => writer.ExecuteAsync(
+                principal, "permissions.delete", () => Task.CompletedTask,
+                permissionId: custom.Id));
+            Assert.False(tenant.IsFilterDisabled);
+        });
+    }
+
     private static async Task WithTestDatabaseAsync(
         Func<IdentityDbContext, TenantContext, IdentityDbContext, TrustedTenantWriteScope, Task> test)
     {

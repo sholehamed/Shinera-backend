@@ -47,6 +47,7 @@ jobs:
           Identity__E2E__CaptchaCode: 'ABCDE'
           # Only the disposable Development CI database receives bootstrap grants.
           Identity__PlatformPermissions__EnforceRoleEndpoints: 'true'
+          Identity__PlatformPermissions__EnforcePermissionEndpoints: 'true'
           Identity__PlatformPermissions__BootstrapDevelopmentGrants: 'true'
           SHINERA_DEVELOPMENT_ADMIN_PASSWORD: 'Disposable_Only_WriteScope_CI_2026!'
           DataBaseServer: '127.0.0.1,1433'
@@ -126,6 +127,28 @@ jobs:
           if [ "$status" != 403 ]; then
             echo "Foreign/non-platform role write did not fail closed with 403 (HTTP $status)"
             cat /tmp/shinera-role-forbidden.json
+            exit 1
+          fi
+          # Catalog keys are immutable through ordinary Permission CRUD even with
+          # an authorized SuperAdmin and the optional granular policy enabled.
+          status=$(curl --silent --show-error --output /tmp/shinera-catalog-forbidden.json \\
+            --write-out '%{http_code}' \\
+            --request POST 'http://127.0.0.1:5069/api/system/Permissions' \\
+            --header "Authorization: Bearer $access_token" \\
+            --header 'Content-Type: application/json' \\
+            --data '{"code":"ROLES.CREATE","name":"Attempted privilege overwrite","resourceId":"00000000-0000-0000-0000-000000000000","isActive":true,"permissionResources":[]}')
+          if [ "$status" != 403 ]; then
+            echo "Catalog mutation was not rejected with HTTP 403 (got $status)"
+            cat /tmp/shinera-catalog-forbidden.json
+            exit 1
+          fi
+          anonymous=$(curl --silent --show-error --output /tmp/shinera-anonymous-permission.json \\
+            --write-out '%{http_code}' \\
+            --request POST 'http://127.0.0.1:5069/api/system/Permissions' \\
+            --header 'Content-Type: application/json' \\
+            --data '{"code":"SERVICES.CREATE","name":"No access","permissionResources":[]}')
+          if [ "$anonymous" != 401 ]; then
+            echo "Anonymous Permission CRUD did not return 401 (got $anonymous)"
             exit 1
           fi
           echo "PASS: real System login, protected read, scoped role create and forbidden cross-scope write."
