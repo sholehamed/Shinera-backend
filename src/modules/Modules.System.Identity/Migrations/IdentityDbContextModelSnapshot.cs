@@ -890,7 +890,6 @@ namespace Modules.Identity.Migrations
 
                     b.Property<string>("CreatedByIp")
                         .HasMaxLength(45)
-                        .IsRequired()
                         .HasColumnType("nvarchar(45)");
 
                     b.Property<DateTime?>("LastModifiedAt")
@@ -901,7 +900,6 @@ namespace Modules.Identity.Migrations
 
                     b.Property<string>("LastModifiedByIp")
                         .HasMaxLength(45)
-                        .IsRequired()
                         .HasColumnType("nvarchar(45)");
 
                     b.Property<byte[]>("RowVersion")
@@ -960,7 +958,6 @@ namespace Modules.Identity.Migrations
 
                     b.Property<string>("CreatedByIp")
                         .HasMaxLength(45)
-                        .IsRequired()
                         .HasColumnType("nvarchar(45)");
 
                     b.Property<DateTime?>("LastModifiedAt")
@@ -971,7 +968,6 @@ namespace Modules.Identity.Migrations
 
                     b.Property<string>("LastModifiedByIp")
                         .HasMaxLength(45)
-                        .IsRequired()
                         .HasColumnType("nvarchar(45)");
 
                     b.Property<byte[]>("RowVersion")
