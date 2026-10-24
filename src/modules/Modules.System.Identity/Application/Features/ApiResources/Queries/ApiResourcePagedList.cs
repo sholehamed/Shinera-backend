@@ -39,7 +39,9 @@ namespace Modules.System.Identity.Application.Features.ApiResources.Queries
     {
         public async Task<PagedList<ApiResourcePagedListDto>> Handle(ApiResourcePagedListQuery request, CancellationToken cancellationToken)
         {
-            var _list = dbContext.ApiResources.AsNoTracking().Where(x=>x.ResourceId==request.ResourceId);
+            var _list = dbContext.ApiResources.AsNoTracking();
+            if (request.ResourceId != Guid.Empty)
+                _list = _list.Where(x => x.ResourceId == request.ResourceId);
             var res = await request.ToPaging(_list, mapper);
             return res;
         }
