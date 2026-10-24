@@ -58,6 +58,51 @@ public static class PlatformGranularCutoverStartupGuard
             throw new InvalidOperationException(
                 "Production Permission.Code uniqueness migration must be separately approved and applied before granular cutover.");
 
+        // The EF migrations ledger does not prove that SQL Server still
+        // enforces the index. A DBA/schema drift could remove or disable the
+        // UNIQUE index after the migration was recorded. Fail closed rather
+        // than treating historical migration metadata as current integrity.
+        var actualUniqueIndex = await db.Database.SqlQueryRaw<int>("""
+            SELECT CASE WHEN EXISTS (
+                SELECT 1
+                FROM sys.indexes AS i
+                JOIN sys.index_columns AS ic
+                  ON ic.object_id = i.object_id
+                 AND ic.index_id = i.index_id
+                JOIN sys.columns AS c
+                  ON c.object_id = ic.object_id
+                 AND c.column_id = ic.column_id
+                WHERE i.object_id = OBJECT_ID(N'[dbo].[Permissions]')
+                  AND i.name = N'UX_Permissions_NormalizedCode'
+                  AND i.is_unique = 1
+                  AND i.is_disabled = 0
+                  AND i.has_filter = 0
+                  AND ic.key_ordinal = 1
+                  AND ic.is_included_column = 0
+                  AND c.name = N'NormalizedCode'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sys.index_columns AS other
+                      WHERE other.object_id = i.object_id
+                        AND other.index_id = i.index_id
+                        AND other.key_ordinal > 1
+                  )
+                  AND EXISTS (
+                      SELECT 1 FROM sys.computed_columns AS computed
+                      WHERE computed.object_id = i.object_id
+                        AND computed.name = N'NormalizedCode'
+                        AND computed.is_persisted = 1
+                  )
+            ) AND EXISTS (
+                SELECT 1 FROM sys.check_constraints AS ck
+                WHERE ck.parent_object_id = OBJECT_ID(N'[dbo].[Permissions]')
+                  AND ck.name = N'CK_Permissions_Code_Length'
+                  AND ck.is_disabled = 0 AND ck.is_not_trusted = 0
+            ) THEN 1 ELSE 0 END AS [Value]
+            """).SingleAsync(ct);
+        if (actualUniqueIndex != 1)
+            throw new InvalidOperationException(
+                "Production Permission.Code UNIQUE index/length constraint is absent, disabled or untrusted; granular cutover denied.");
+
         // Require the complete narrow 5A scope audit. This does NOT guarantee
         // correctness of all identities or the real operator-approved proposal.
         var inventory = await PlatformProductionGrantInventory.ReadAsync(db, ct);
