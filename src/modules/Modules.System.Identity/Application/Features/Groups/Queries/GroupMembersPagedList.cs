@@ -10,6 +10,7 @@ namespace Groups.System.Identity.Application.Features.Groups.Queries
     public record GroupMemberPagedListDto : IMapFrom<UserGroup>, IQueryFilter<UserGroup>
     {
         public Guid Id { get; set; }
+        public Guid UserId { get; set; }
         public Guid? Avatar { get; set; }
         public string UserName { get; set; } = default!;
 
@@ -26,6 +27,7 @@ namespace Groups.System.Identity.Application.Features.Groups.Queries
         public void Mapping(Profile profile)
         {
             profile.CreateMap<UserGroup, GroupMemberPagedListDto>()
+                .ForMember(x => x.UserId, opt => opt.MapFrom(x => x.UserId))
                 .ForMember(x => x.UserName, opt => opt.MapFrom(x => x.User.UserName))
                 .ForMember(x => x.FirstName, opt => opt.MapFrom(x => x.User.FirstName))
                 .ForMember(x => x.LastName, opt => opt.MapFrom(x => x.User.LastName))
