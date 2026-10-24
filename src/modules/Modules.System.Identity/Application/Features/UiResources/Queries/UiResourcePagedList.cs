@@ -34,7 +34,9 @@ namespace Modules.System.Identity.Application.Features.UiResources.Queries
     {
         public async Task<PagedList<UiResourcePagedListDto>> Handle(UiResourcePagedListQuery request, CancellationToken cancellationToken)
         {
-            var _list = dbContext.UiResources.AsNoTracking().Where(x=>x.ResourceId==request.ResourceId);
+            var _list = dbContext.UiResources.AsNoTracking();
+            if (request.ResourceId != Guid.Empty)
+                _list = _list.Where(x => x.ResourceId == request.ResourceId);
             var res = await request.ToPaging(_list, mapper);
             return res;
         }

@@ -10,6 +10,7 @@ namespace Modules.System.Identity.Web.Endpoints
             app.MapGroup(this).RequireAuthorization("SystemAdministrator")
 
                 .MapPost(UiResourcePagedList, "{resourceId}/pagedList")
+                .MapPost(UiResourceGlobalPagedList, "pagedList")
                 .MapGet(UiResourceGetById, "{id}")
                 .MapGet(UiResourceLookup, "lookup")
                 .MapPost(UiResourceCreate)
@@ -18,6 +19,16 @@ namespace Modules.System.Identity.Web.Endpoints
                 .MapPatch(UiResourceChangeState, "{id}")
             ;
         }
+        // Global, SystemAdministrator-protected list for root panel menu pages.
+        // The legacy resource-scoped endpoint remains unchanged.
+        public async Task<Ok<PagedList<UiResourcePagedListDto>>> UiResourceGlobalPagedList(
+            IDispatcher sender, UiResourcePagedListQuery parameter,
+            CancellationToken cancellationToken = default)
+        {
+            parameter.ResourceId = Guid.Empty;
+            return TypedResults.Ok(await sender.Query(parameter, cancellationToken));
+        }
+
         public async Task UiResourceChangeState(IDispatcher sender, Guid id)
         {
             await sender.Send(new UiResourceChangeStateCommand(id));

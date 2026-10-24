@@ -31,6 +31,7 @@ namespace Modules.System.Identity.Application.Features.Dashboard
             var permissions = _context.Permissions.AsNoTracking();
             result.TotalTenants = await tenants.Select(x => 1).CountAsync();
             result.ActiveTenants = await tenants.Where(x => x.IsActive).Select(x => 1).CountAsync();
+            result.TotalUsers = await users.Select(x => 1).CountAsync();
             result.TotalRoles = await roles.Select(x => 1).CountAsync();
             result.TotalPermissions = await permissions.Select(x => 1).CountAsync();
             return result;

@@ -33,12 +33,23 @@ namespace Modules.System.Identity.Web.Endpoints
 
             app.MapGroup(this).RequireAuthorization("SystemAdministrator")
                 .MapPost(PermissionPagedList, "{resourceId}/pagedList")
+                .MapPost(PermissionGlobalPagedList, "pagedList")
                 .MapGet(PermissionLookup, "lookup")
                 .MapGet(PermissionGetById, "{id:guid}")
                 .MapPost(PermissionCreate, configure: requireCreate)
                 .MapPut(PermissionUpdate, "{id}", configure: requireUpdate)
                 .MapDelete(PermissionDelete, "{id}", configure: requireDelete)
                 .MapPatch(PermissionChangeState, "{id}", configure: requireState);
+        }
+
+        // Global, SystemAdministrator-protected list for root panel menu pages.
+        // The legacy resource-scoped endpoint remains unchanged.
+        public async Task<Ok<PagedList<PermissionPagedListDto>>> PermissionGlobalPagedList(
+            IDispatcher sender, PermissionPagedListQuery parameter,
+            CancellationToken cancellationToken = default)
+        {
+            parameter.ResourceId = Guid.Empty;
+            return TypedResults.Ok(await sender.Query(parameter, cancellationToken));
         }
 
         public async Task<Ok<List<PermissionlookupDto>>> PermissionLookup(

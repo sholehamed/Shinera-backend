@@ -32,7 +32,9 @@ namespace Modules.System.Identity.Application.Features.Permissions.Queries
     {
         public async Task<PagedList<PermissionPagedListDto>> Handle(PermissionPagedListQuery request, CancellationToken cancellationToken)
         {
-            var _list = dbContext.Permissions.AsNoTracking().Where(x=>x.ResourceId==request.ResourceId);
+            var _list = dbContext.Permissions.AsNoTracking();
+            if (request.ResourceId != Guid.Empty)
+                _list = _list.Where(x => x.ResourceId == request.ResourceId);
             var res = await request.ToPaging(_list, mapper);
             return res;
         }
