@@ -137,7 +137,19 @@ namespace Modules.System.Identity
             // Before authorization, also observes endpoint-level Forbid() responses.
             app.UseMiddleware<PlatformDeniedAccessAuditMiddleware>();
             app.UseAuthorization();
-            DbSeeder.SeedAsync(app.Services).Wait();
+            DbSeeder.SeedAsync(app.Services).GetAwaiter().GetResult();
+            // Stop BEFORE endpoint registration/serving any requests if a
+            // Production operator turned granular enforcement ON without a
+            // reviewed fixed-Master inventory, schema and DB target. No auto-
+            // cutover, privilege backfill, or audit bypass is allowed here.
+            using (var cutoverScope = app.Services.CreateScope())
+            {
+                var identityDb = cutoverScope.ServiceProvider
+                    .GetRequiredService<IdentityDbContext>();
+                PlatformGranularCutoverStartupGuard.ValidateAsync(identityDb,
+                    configuration, app.Environment.IsProduction())
+                    .GetAwaiter().GetResult();
+            }
             //app.UseMiddleware<PermissionMiddleware>();
             app.UseMiddleware<TenantResolutionMiddleware>();
             app.MapEndpoints($"{configuration["BackendPrefix"]}System");
