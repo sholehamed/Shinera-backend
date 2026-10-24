@@ -131,6 +131,12 @@ public static partial class PublicSignup
             db.Branches.Add(mainBranch);
             db.Roles.Add(ownerRole);
             db.UserRoles.Add(assignment);
+            // Explicit membership/grant for the freshly created owner.
+            db.UserTenantAccess.Add(new UserTenantAccess {
+                TenantId = tenant.Id, UserId = user.Id,
+                CanRead = true, CanWrite = true, IncludeDescendants = false,
+                IsDenied = false, Reason = "Signup workspace owner"
+            });
             db.TenantClosure.Add(new TenantClosure {
                 AncestorTenantId = tenant.Id,
                 DescendantTenantId = tenant.Id,
