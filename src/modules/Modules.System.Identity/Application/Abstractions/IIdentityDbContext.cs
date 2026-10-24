@@ -14,6 +14,8 @@ namespace Modules.System.Identity.Application.Abstractions
         DbSet<RolePermission> RolePermissions { get; }
         DbSet<Role> Roles { get; }
         DbSet<Tenant> Tenants { get; }
+        DbSet<BusinessProfile> BusinessProfiles { get; }
+        DbSet<Branch> Branches { get; }
         DbSet<UserGroup> UserGroups { get; }
         DbSet<UserPermission> UserPermissions { get; }
         DbSet<UserRole> UserRoles { get; }
