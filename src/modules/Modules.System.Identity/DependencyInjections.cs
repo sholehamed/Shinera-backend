@@ -19,6 +19,7 @@ using OpenIddict.Abstractions;
 using OpenIddict.Validation.AspNetCore;
 using System.Reflection;
 using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
 using Modules.System.Identity.Web.Endpoints;
 namespace Modules.System.Identity
 {
