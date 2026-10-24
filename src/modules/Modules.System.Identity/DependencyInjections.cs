@@ -168,6 +168,7 @@ namespace Modules.System.Identity
             app.UseMiddleware<TenantResolutionMiddleware>();
             app.UseRateLimiter();
             PublicSignup.Map(app, configuration["BackendPrefix"] ?? "api/");
+            TenantWorkspace.Map(app, configuration["BackendPrefix"] ?? "api/");
             app.MapEndpoints($"{configuration["BackendPrefix"]}System");
 
             return app;
