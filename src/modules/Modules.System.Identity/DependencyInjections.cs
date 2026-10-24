@@ -18,6 +18,9 @@ using Modules.System.Identity.Web.Util;
 using OpenIddict.Abstractions;
 using OpenIddict.Validation.AspNetCore;
 using System.Reflection;
+using System.Threading.RateLimiting;
+using Microsoft.AspNetCore.RateLimiting;
+using Modules.System.Identity.Web.Endpoints;
 namespace Modules.System.Identity
 {
     public static class DependencyInjections
@@ -25,6 +28,18 @@ namespace Modules.System.Identity
         public static IServiceCollection AddIdentityModule(this IServiceCollection services, IConfiguration configuration, IHostEnvironment environment)
         {
             services.AddSingleton<IPasswordHasher<User>, PasswordHasher<User>>();
+            services.AddRateLimiter(options =>
+            {
+                options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+                options.AddPolicy("public-signup", context =>
+                    RateLimitPartition.GetFixedWindowLimiter(
+                        context.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 5, Window = TimeSpan.FromMinutes(1),
+                            QueueLimit = 0, AutoReplenishment = true
+                        }));
+            });
             services.AddScoped<ICurrentUser, CurrentUser>();
 
             services.AddScoped<ITenantContext, TenantContext>();
@@ -152,6 +167,9 @@ namespace Modules.System.Identity
             }
             //app.UseMiddleware<PermissionMiddleware>();
             app.UseMiddleware<TenantResolutionMiddleware>();
+            app.UseRateLimiter();
+            PublicSignup.Map(app, configuration["BackendPrefix"] ?? "api/");
+            TenantWorkspace.Map(app, configuration["BackendPrefix"] ?? "api/");
             app.MapEndpoints($"{configuration["BackendPrefix"]}System");
 
             return app;

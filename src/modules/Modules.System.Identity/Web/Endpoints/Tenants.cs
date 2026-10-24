@@ -23,8 +23,15 @@ public class Tenants : EndpointGroupBase
     {
         var slug = httpContext.Request.Headers["X-Tenant-Domain"].ToString();
 
-        var res = await sender.Query(new TenantResolveBySlugQuery(slug));
-        return TypedResults.Ok(res);
+        try
+        {
+            var res = await sender.Query(new TenantResolveBySlugQuery(slug));
+            return TypedResults.Ok(res);
+        }
+        catch (KeyNotFoundException)
+        {
+            return TypedResults.NotFound();
+        }
     }
     public async Task TenantChangeState(IDispatcher sender, Guid id)
     {

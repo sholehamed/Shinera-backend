@@ -20,6 +20,8 @@ namespace Modules.System.Identity.Infrastructure.Persistence.Contexts
         public DbSet<Role> Roles => Set<Role>();
         public DbSet<RolePermission> RolePermissions => Set<RolePermission>();
         public DbSet<Tenant> Tenants => Set<Tenant>();
+        public DbSet<BusinessProfile> BusinessProfiles => Set<BusinessProfile>();
+        public DbSet<Branch> Branches => Set<Branch>();
         public DbSet<User> Users => Set<User>();
         public DbSet<UserGroup> UserGroups => Set<UserGroup>();
         public DbSet<UserPermission> UserPermissions => Set<UserPermission>();
