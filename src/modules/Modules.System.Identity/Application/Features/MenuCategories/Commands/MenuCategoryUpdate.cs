@@ -18,7 +18,7 @@ namespace Modules.System.Identity.Application.Features.MenuCategories.Commands
     {
         public async Task Handle(MenuCategoryUpdateCommand command, CancellationToken cancellationToken)
         {
-            User? entity = await context.Users
+            MenuCategory? entity = await context.MenuCategories
       .FirstOrDefaultAsync(x => x.Id == command.Id, cancellationToken);
             Guard.Against.NotFound(command.Id, entity);
             mapper.Map(command, entity);
