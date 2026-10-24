@@ -118,6 +118,54 @@ public sealed class PlatformGranularCutoverStartupGuardSqlServerTests
         }, applyLatestMigration: false);
     }
 
+    [Fact]
+    public async Task Recorded_migration_without_physical_unique_index_must_fail_closed()
+    {
+        await WithDatabaseAsync(async (db, name) =>
+        {
+            // With the full migration history present, an unprepared Master
+            // still fails at inventory (not the physical schema check).
+            var before = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                PlatformGranularCutoverStartupGuard.ValidateAsync(
+                    db, Config(true, false, name), isProduction: true));
+            Assert.Contains("inventory", before.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            // Simulate out-of-band schema drift: the EF migration history
+            // remains unchanged even when an index is dropped by a DBA.
+            await db.Database.ExecuteSqlRawAsync(
+                "DROP INDEX [UX_Permissions_NormalizedCode] ON [dbo].[Permissions]");
+            var drift = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                PlatformGranularCutoverStartupGuard.ValidateAsync(
+                    db, Config(true, false, name), isProduction: true));
+            Assert.Contains("UNIQUE index", drift.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            // Both flags OFF continue to permit a safe coarse-policy restart.
+            await PlatformGranularCutoverStartupGuard.ValidateAsync(
+                db, Config(false, false), isProduction: true);
+        });
+    }
+
+    [Fact]
+    public async Task Untrusted_permission_length_check_must_block_granular_cutover()
+    {
+        await WithDatabaseAsync(async (db, name) =>
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE [dbo].[Permissions] NOCHECK CONSTRAINT [CK_Permissions_Code_Length]");
+
+            var invalid = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                PlatformGranularCutoverStartupGuard.ValidateAsync(
+                    db, Config(false, true, name), isProduction: true));
+            Assert.Contains("length constraint", invalid.Message,
+                StringComparison.OrdinalIgnoreCase);
+
+            await PlatformGranularCutoverStartupGuard.ValidateAsync(
+                db, Config(false, false), isProduction: true);
+        });
+    }
+
     private static IConfiguration Config(
         bool roles, bool permissions, string? database = null, Guid? masterId = null)
     {
