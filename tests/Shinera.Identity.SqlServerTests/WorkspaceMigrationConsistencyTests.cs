@@ -19,6 +19,7 @@ public sealed class WorkspaceMigrationConsistencyTests
             .Options;
         using var db = new IdentityDbContext(options, new TenantContext());
         var snapshot = db.GetService<IMigrationsAssembly>().ModelSnapshot!.Model;
+        snapshot = db.GetService<IModelRuntimeInitializer>().Initialize(snapshot, designTime: true);
         var runtime = db.GetService<IDesignTimeModel>().Model;
         var changes = db.GetService<IMigrationsModelDiffer>()
             .GetDifferences(snapshot.GetRelationalModel(), runtime.GetRelationalModel());
