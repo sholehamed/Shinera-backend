@@ -131,7 +131,7 @@ public static partial class PublicSignup
             db.Branches.Add(mainBranch);
             db.Roles.Add(ownerRole);
             db.UserRoles.Add(assignment);
-            // The owner User.HomeTenantId and UserRole establish membership.
+            // The owner User.TenantId and UserRole establish membership.
             // TenantAccessResolver grants home-tenant read/write automatically;
             // UserTenantAccess is reserved for *additional* cross-tenant grants.
             db.TenantClosure.Add(new TenantClosure {
