@@ -289,18 +289,18 @@ CancellationToken cancellationToken)
             }
 
             // ۱. استخراج تمامی دسترسی‌های معتبر کاربر (مستقیم + نقش‌های مستقیم + نقش‌های گروه‌ها)
-            var permissions = await db.UserPermissions
+            var permissions = await db.UserPermissions.IgnoreQueryFilters(["tenant"])
                 .Where(x => x.TenantId == tenant.Id && x.UserId == user.Id && x.IsGranted)
                 .Select(x => x.Permission.Name)
                 .Union(
                     // دسترسی‌های ناشی از نقش‌های مستقیم کاربر
-                    db.UserRoles
+                    db.UserRoles.IgnoreQueryFilters(["tenant"])
                         .Where(x => x.TenantId == tenant.Id && x.UserId == user.Id)
                         .SelectMany(x => x.Role.RolePermissions.Select(rp => rp.Permission.Name))
                 )
                 .Union(
                     // دسترسی‌های ناشی از نقش‌های انتساب‌داده‌شده به گروه‌های کاربر
-                    db.UserGroups
+                    db.UserGroups.IgnoreQueryFilters(["tenant"])
                         .Where(x => x.TenantId == tenant.Id && x.UserId == user.Id)
                         .SelectMany(x => x.Group.GroupRoles
                             .SelectMany(gr => gr.Role.RolePermissions.Select(rp => rp.Permission.Name)))
@@ -309,12 +309,12 @@ CancellationToken cancellationToken)
                 .ToListAsync(cancellationToken);
 
             // ۲. استخراج تمامی نقش‌های کاربر (نقش‌های مستقیم + نقش‌های به ارث رسیده از گروه‌ها)
-            var roles = await db.UserRoles
+            var roles = await db.UserRoles.IgnoreQueryFilters(["tenant"])
                 .Where(x => x.TenantId == tenant.Id && x.UserId == user.Id)
                 .Select(x => x.Role.Name)
                 .Union(
                     // نقش‌هایی که کاربر از طریق عضویت در گروه‌ها به دست آورده است
-                    db.UserGroups
+                    db.UserGroups.IgnoreQueryFilters(["tenant"])
                         .Where(x => x.TenantId == tenant.Id && x.UserId == user.Id)
                         .SelectMany(x => x.Group.GroupRoles.Select(gr => gr.Role.Name))
                 )
